@@ -1127,7 +1127,7 @@
       var _linkIsGov = /(^|\.)(go\.kr|korea\.kr|gov\.kr)(\/|$|:)|\.go\.kr|korea\.kr/i.test((_source&&_source.url)||'');
       await finishGen(res.post, keyword||(res.post&&res.post.title)||'', _cmLinks, null, { search:true, sourceUrl:(_source&&_source.url)||'', sourceSite:(_source&&_source.siteName)||'', linkImages:(_source&&_source.images)||[], linkIsGov:_linkIsGov });
       window._genResult='ok'; // ★예약 자동 실행(autoRun)이 완료를 감지하는 신호 — 검색용도 홈판처럼 세팅(없어서 자동실행이 타임아웃되던 버그).
-      if(st){ st.className='status on'; st.innerHTML='완료! <b>'+esc((res.post&&res.post.title)||'')+'</b> — 검색용 글 작성됨'; }
+      if(st){ st.className='status on'; st.innerHTML='완료! <b>'+esc((res.post&&res.post.title)||'')+'</b> — 검색용 글 작성됨'; renderGenWarnings(res, st); }
     }catch(e){ _recordTokenLimit(e&&e.message); try{ if(typeof genError==='function') genError(e.message); }catch(_){} if(st) st.textContent='오류: '+e.message; window._genResult='err:'+(e&&e.message||e); }
     finally{ btn.disabled=false; }
   });
@@ -2114,6 +2114,36 @@
     setTimeout(()=>{ byId('ad-saved').style.display='none'; }, 2600);
   });
 
+
+  // ★생성 결과의 "경고"를 보여준다 — 두 가지.
+  //   ① 팩트 대조: 근거에 없는 구체 주장(날짜·수치·이름·발언)을 골라낸 것. 차단이 아니라 "이 부분은 직접 확인하세요".
+  //   ② 수집 진단: 자료 수집이 0건인 소스. 네이버 구조가 바뀌면 조용히 근거가 사라지므로 표면화한다.
+  function renderGenWarnings(res, statusEl){
+    try{
+      if(!statusEl) return;
+      var old=document.getElementById('gen-warn'); if(old) old.remove();
+      var fc=res&&res.factCheck, hs=res&&res.scrapeHealth;
+      var parts=[];
+      if(hs && hs.ok===false && hs.message){
+        parts.push('<div style="margin-bottom:6px">🛠️ <b>자료 수집 문제</b> — '+esc(hs.message)+'</div>');
+      }
+      if(fc && fc.ran && fc.issues && fc.issues.length){
+        var high=fc.issues.filter(function(i){ return i.verdict==='unsupported' && i.severity==='high'; });
+        var rest=fc.issues.filter(function(i){ return high.indexOf(i)<0; });
+        var li=function(i){ return '<li style="margin:3px 0">'+(i.verdict==='unsupported'?'❗':'❓')+' <b>'+esc(i.text)+'</b><br><span style="color:#8b95a5">'+esc(i.why)+'</span></li>'; };
+        parts.push('<div><b>🔎 사실 확인이 필요한 부분 '+fc.issues.length+'건</b>'
+          + (high.length?' <span style="color:#c0392b">(근거에 없음 '+high.length+'건)</span>':'')
+          + '<div style="color:#8b95a5;margin:3px 0 5px">근거 자료에 없는 내용이에요. 틀렸다는 뜻은 아니지만 <b>발행 전에 직접 확인</b>해 주세요.</div>'
+          + '<ul style="margin:0;padding-left:18px">'+high.concat(rest).slice(0,8).map(li).join('')+'</ul></div>');
+      }
+      if(!parts.length) return;
+      var box=document.createElement('div');
+      box.id='gen-warn';
+      box.style.cssText='margin-top:8px;padding:10px 12px;border:1px solid #ffe2ad;background:#fff9ef;border-radius:10px;font-size:11.5px;line-height:1.6;color:#6b5a2e';
+      box.innerHTML=parts.join('<hr style="border:0;border-top:1px solid #f0e2c4;margin:8px 0">');
+      statusEl.insertAdjacentElement('afterend', box);
+    }catch(e){}
+  }
 
   // 생성된 글을 왼쪽 편집기에 렌더
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -4112,6 +4142,7 @@
       }
       await finishGen(res.post, imgKeyword, coupangLinks, adsense);  // 생성 → 주입 + 이미지 + 쿠팡 + 애드센스
       st.innerHTML='완료! <b>'+esc(res.post.title)+'</b> — 에디터에 작성됨';
+      renderGenWarnings(res, st);
       window._genResult='ok'; // ★자동 실행이 완료를 감지하는 신호
     }catch(e){ _recordTokenLimit(e&&e.message); if(!_cancelled){ genError(e.message); st.textContent='오류: '+e.message; } window._genResult='err:'+(e&&e.message||e); }
     finally{ btn.disabled=false; window._genBusy=false; }

@@ -10,6 +10,10 @@
 //   각 소스는 독립 try/catch — 하나 죽어도 나머지로 굴러가고, 전부 실패하면 [] (Claude 자가선택 폴백).
 
 const https = require('https');
+// ★네이버 마크업 의존부는 전부 markup.js 한 곳에 있다(깨지면 거기만 고친다).
+const M = require('../scrape/markup');
+// ★수집 결과 건수를 기록해 "조용한 0건"(구조 변경)을 잡는다.
+const health = require('../scrape/health');
 
 // 원시 바이트로 받기(인코딩이 EUC-KR일 수 있어 문자열 concat 금지).
 function fetchBuffer(url, timeoutMs = 12000) {
@@ -115,33 +119,14 @@ async function fetchZum() {
 //   이걸 생성기에 주면 인물·사건을 지어내지 않고 실제 사실만 쓰게 된다. 무키(공개 검색).
 async function fetchNewsHeadlines(keyword) {
   try {
-    const url = 'https://search.naver.com/search.naver?where=news&sort=1&query=' + encodeURIComponent(keyword);
-    const buf = await fetchBuffer(url);
-    const html = buf.toString('utf8');
-    const decode = (s) => s.replace(/<[^>]*>/g, '')
-      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
-    const grab = (type, max) => {
-      const re = new RegExp('<span[^>]*sds-comps-text-type-' + type + '[^>]*>([\\s\\S]*?)</span>', 'g');
-      const out = []; let m;
-      while ((m = re.exec(html)) && out.length < max) { const t = decode(m[1]); if (t) out.push(t); }
-      return out;
-    };
-    // ★헤드라인(제목) + body1(기사 요약 스니펫)을 짝지어 "풍부한 사실"로 만든다.
+    const html = (await fetchBuffer(M.searchUrl.news(keyword))).toString('utf8');
+    // ★헤드라인(제목) + 요약 스니펫을 짝지어 "풍부한 사실"로 만든다.
     //   헤드라인만 주면 모델이 살을 지어냄(가짜 발언·틀린 별명) → 스니펫에 실제 내용이 있어 날조를 막는다.
-    const heads = grab('headline1', 8);
-    const bodies = grab('body1', 8);
-    const out = [];
-    const seen = new Set();
-    for (let i = 0; i < heads.length; i++) {
-      const h = heads[i];
-      if (!h || seen.has(h)) continue;
-      seen.add(h);
-      const b = bodies[i];
-      out.push(b && b.length > 20 ? `${h} — ${b.slice(0, 180)}` : h);
-    }
-    return out.slice(0, 8);
+    const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 180 });
+    health.record('news-headlines', out.length, { query: keyword });
+    return out;
   } catch (e) {
+    health.record('news-headlines', 0, { query: keyword });
     return [];
   }
 }
@@ -151,28 +136,12 @@ async function fetchNewsHeadlines(keyword) {
 async function fetchPlaceReviews(placeName) {
   try {
     const q = (placeName || '').trim() + ' 후기';
-    const url = 'https://search.naver.com/search.naver?where=blog&query=' + encodeURIComponent(q);
-    const buf = await fetchBuffer(url);
-    const html = buf.toString('utf8');
-    const decode = (s) => s.replace(/<[^>]*>/g, '')
-      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
-    const grab = (type, max) => {
-      const re = new RegExp('<span[^>]*sds-comps-text-type-' + type + '[^>]*>([\\s\\S]*?)</span>', 'g');
-      const out = []; let m;
-      while ((m = re.exec(html)) && out.length < max) { const t = decode(m[1]); if (t) out.push(t); }
-      return out;
-    };
-    const heads = grab('headline1', 8);
-    const bodies = grab('body1', 8);
-    const out = []; const seen = new Set();
-    for (let i = 0; i < heads.length; i++) {
-      const h = heads[i]; if (!h || seen.has(h)) continue; seen.add(h);
-      const b = bodies[i];
-      out.push(b && b.length > 20 ? `${h} — ${b.slice(0, 160)}` : h);
-    }
-    return out.slice(0, 8);
+    const html = (await fetchBuffer(M.searchUrl.blog(q))).toString('utf8');
+    const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 160 });
+    health.record('place-reviews', out.length, { query: q });
+    return out;
   } catch (e) {
+    health.record('place-reviews', 0, { query: placeName });
     return [];
   }
 }
@@ -215,28 +184,13 @@ async function fetchNearbyAttractions(region) {
 //   ★그대로 베끼지 말고 "사실 근거"로만 쓰게 프롬프트가 강제(재작성). 부정확한 개인 블로그가 섞일 수 있으니 여러 개를 모아 교차.
 async function fetchBlogFacts(keyword) {
   try {
-    const url = 'https://search.naver.com/search.naver?where=blog&query=' + encodeURIComponent((keyword || '').trim());
-    const buf = await fetchBuffer(url);
-    const html = buf.toString('utf8');
-    const decode = (s) => s.replace(/<[^>]*>/g, '')
-      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
-    const grab = (type, max) => {
-      const re = new RegExp('<span[^>]*sds-comps-text-type-' + type + '[^>]*>([\\s\\S]*?)</span>', 'g');
-      const out = []; let m;
-      while ((m = re.exec(html)) && out.length < max) { const t = decode(m[1]); if (t) out.push(t); }
-      return out;
-    };
-    const heads = grab('headline1', 10);
-    const bodies = grab('body1', 10);
-    const out = []; const seen = new Set();
-    for (let i = 0; i < heads.length; i++) {
-      const h = heads[i]; if (!h || seen.has(h)) continue; seen.add(h);
-      const b = bodies[i];
-      out.push(b && b.length > 20 ? `${h} — ${b.slice(0, 200)}` : h);
-    }
-    return out.slice(0, 8);
+    const kw = (keyword || '').trim();
+    const html = (await fetchBuffer(M.searchUrl.blog(kw))).toString('utf8');
+    const out = M.grabTitleSnippetPairs(html, { max: 10, snippetLen: 200 }).slice(0, 8);
+    health.record('blog-facts', out.length, { query: kw });
+    return out;
   } catch (e) {
+    health.record('blog-facts', 0, { query: keyword });
     return [];
   }
 }
@@ -263,8 +217,8 @@ async function _fetchArticleBody(oid, aid, kind) {
   // 2) 일반뉴스 n.news 모바일 #dic_area
   try {
     const ah = (await fetchBuffer('https://n.news.naver.com/mnews/article/' + oid + '/' + aid)).toString('utf8');
-    const bm = ah.match(/<article[^>]*id=["']dic_area["'][^>]*>([\s\S]*?)<\/article>/i);
-    const tm = ah.match(/<h2[^>]*id=["']title_area["'][^>]*>([\s\S]*?)<\/h2>/i);
+    const bm = ah.match(M.ARTICLE_BODY_RE);
+    const tm = ah.match(M.ARTICLE_TITLE_RE);
     if (bm) { const body = _stripHtml(bm[1]); if (body.length > 120) return { title: tm ? _stripHtml(tm[1]) : '', body }; }
   } catch (e) {}
   return null;
@@ -290,14 +244,8 @@ async function fetchArticleImages(keyword, { limit = 8 } = {}) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const html = (await fetchBuffer('https://search.naver.com/search.naver?where=news&sort=1&query=' + encodeURIComponent(kw))).toString('utf8');
-    const re = /https?:\/\/(?:m\.)?(sports|entertain|n)\.(?:news\.)?naver\.com\/[a-z]*\/?(?:mnews\/)?article\/(\d{2,4})\/(\d{6,})/gi;
-    const seen = new Set(); const items = []; let m;
-    while ((m = re.exec(html)) && items.length < 6) {
-      const kind = m[1] === 'sports' ? 'sports' : m[1] === 'entertain' ? 'entertain' : 'news';
-      const key = m[2] + '/' + m[3]; if (seen.has(key)) continue; seen.add(key);
-      items.push({ oid: m[2], aid: m[3], kind });
-    }
+    const html = (await fetchBuffer(M.searchUrl.news(kw))).toString('utf8');
+    const items = M.grabArticleRefs(html, 6);
     const out = []; const seenUrl = new Set();
     for (const it of items) {
       if (out.length >= limit) break;
@@ -315,25 +263,17 @@ async function fetchNewsArticles(keyword, { limit = 3, maxLen = 1800 } = {}) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const url = 'https://search.naver.com/search.naver?where=news&sort=1&query=' + encodeURIComponent(kw);
-    const html = (await fetchBuffer(url)).toString('utf8');
-    // 네이버 기사 링크(스포츠·연예·일반)에서 oid/aid + 종류 추출. 중복 제거.
-    const re = /https?:\/\/(?:m\.)?(sports|entertain|n)\.(?:news\.)?naver\.com\/[a-z]*\/?(?:mnews\/)?article\/(\d{2,4})\/(\d{6,})/gi;
-    const seen = new Set(); const items = []; let m;
-    while ((m = re.exec(html)) && items.length < limit + 5) {
-      const kind = m[1] === 'sports' ? 'sports' : m[1] === 'entertain' ? 'entertain' : 'news';
-      const key = m[2] + '/' + m[3];
-      if (seen.has(key)) continue; seen.add(key);
-      items.push({ oid: m[2], aid: m[3], kind });
-    }
+    const html = (await fetchBuffer(M.searchUrl.news(kw))).toString('utf8');
+    const items = M.grabArticleRefs(html, limit + 5); // 기사 링크(스포츠·연예·일반) oid/aid
     const out = [];
     for (const it of items) {
       if (out.length >= limit) break;
       const r = await _fetchArticleBody(it.oid, it.aid, it.kind);
       if (r && r.body && r.body.length > 120) out.push({ title: r.title, body: r.body.slice(0, maxLen) });
     }
+    health.record('news-articles', out.length, { query: kw });
     return out;
-  } catch (e) { return []; }
+  } catch (e) { health.record('news-articles', 0, { query: keyword }); return []; }
 }
 
 // ★이 주제로 "지금 네이버 상단에 뜬 실제 제목들" — 제목 작성 시 톤·각도 참고용(그대로 베끼지 말 것, 프롬프트에서 강제).
@@ -342,13 +282,7 @@ async function fetchTopTitles(keyword) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const url = 'https://search.naver.com/search.naver?where=blog&query=' + encodeURIComponent(kw);
-    const buf = await fetchBuffer(url);
-    const html = buf.toString('utf8');
-    const decode = (s) => s.replace(/<[^>]*>/g, '')
-      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
-    const re = /<span[^>]*sds-comps-text-type-headline1[^>]*>([\s\S]*?)<\/span>/g;
+    const html = (await fetchBuffer(M.searchUrl.blog(kw))).toString('utf8');
     // 블로그 제목이 아닌 노이즈(지식백과·채널·위키 등) 제외.
     const isNoise = (t) =>
       /(?:^|[\-·|])\s*(?:나무위키|위키백과|namu\.?wiki|wikipedia|youtube|유튜브|블로그|포스트|네이버 지식|지식백과)\s*$/i.test(t) ||
@@ -356,13 +290,14 @@ async function fetchTopTitles(keyword) {
       /\(@[\w.]+\)/.test(t) ||                                            // @핸들
       /^(?:연예|스포츠|정치|경제|사회|생활\/?문화|문화|국제|세계|IT\/?과학|IT)\s*[-·|]\s*\S{2,10}$/.test(t) || // 언론사 섹션 라벨
       /^https?:/i.test(t);
-    const out = []; const seen = new Set(); let m;
-    while ((m = re.exec(html)) && out.length < 16) {
-      const t = decode(m[1]);
+    const out = []; const seen = new Set();
+    for (const t of M.grabSds(html, 'headline1', 16)) {
       if (t && t.length >= 6 && !seen.has(t) && !isNoise(t)) { seen.add(t); out.push(t); }
     }
+    health.record('top-titles', out.length, { query: kw });
     return out.slice(0, 10);
   } catch (e) {
+    health.record('top-titles', 0, { query: keyword });
     return [];
   }
 }
@@ -406,6 +341,7 @@ async function fetchRealtimeTrends() {
       }
     }
   }
+  health.record('realtime-trends', merged.length);
   return merged;
 }
 

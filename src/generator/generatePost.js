@@ -7,7 +7,9 @@ const { runClaude } = require('./runClaude');
 const { checkHomefeedWords } = require('./homefeedWords');
 const { getPostType, MAX_QUOTES } = require('./postTypes');
 const { buildSystemPrompt, buildUserPrompt, buildTitleRefinePrompt, TITLE_REFINE_SYSTEM } = require('./buildPrompt');
-const { fetchRealtimeTrends, fetchNewsHeadlines, fetchBlogFacts, fetchPlaceReviews, fetchTopTitles } = require('../keyword/trends');
+const { fetchRealtimeTrends, fetchNewsHeadlines, fetchNewsArticles, fetchBlogFacts, fetchPlaceReviews, fetchTopTitles } = require('../keyword/trends');
+const scrapeHealth = require('../scrape/health');
+const { factCheckPost } = require('./factCheck');
 const { fetchAutocomplete } = require('../keyword/expand');
 const { findNicheAngles } = require('../keyword/niche');
 const { fetchNamuBackground } = require('../keyword/background');
@@ -58,6 +60,7 @@ function newsQueryVariants(keyword) {
  */
 async function generatePost({ type, keyword, extra, tone, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, trends, extraTrends, avoidKeywords, headingTarget, cardMode, contentForm, model, maxAttempts = 3 } = {}) {
   const postType = getPostType(type); // 잘못된 유형이면 여기서 예외
+  scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   const system = buildSystemPrompt(type, { tone });
   const _tGenStart = Date.now(); // ★[타이밍] 생성 속도 진단
   const _tlog = (m) => { try { console.log('[TIMING] ' + m + '  (+' + Math.round((Date.now() - _tGenStart) / 1000) + 's)'); } catch (e) {} };
@@ -128,7 +131,7 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
   // ★수동 키워드 재료(다양한 소스 조합 = "우리화"의 핵심, 단일 기사 요약 방지):
   //   - keywordAngles = 자동완성 롱테일(사람들이 실제 함께 찾는 것) → 본문이 다뤄야 할 독자 의도 각도.
   //   - keywordFacts  = 키워드 + 상위 롱테일 여러 각도로 뉴스를 "여러 번" 검색해 모은 다양한 기사 제목(중복 제거).
-  let keywordFacts = null, keywordAngles = null, nicheAngles = null, keywordBackground = null;
+  let keywordFacts = null, keywordArticles = null, keywordAngles = null, nicheAngles = null, keywordBackground = null;
   // ★리뷰 유형 = 뉴스·인물 조사 안 함(내 경험 기반). 장소면 실제 리뷰만 참고로 긁는다(아래).
   if (keyword && type !== 'review') {
     const core = coreEntity(keyword);            // "고현정 근황" → "고현정"
@@ -161,6 +164,12 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
     const recentQ = [keyword, ...keywordAngles.slice(0, 5)];
     const recentArr = await Promise.all(recentQ.map((q) => fetchNewsHeadlines(q).catch(() => [])));
     keywordFacts = collect(recentArr, 24);
+    // ★★기사 "본문"까지 읽는다 — 제목+스니펫(180자)만으론 세부(누가·언제·얼마·무슨 발언)가 없어
+    //   모델이 살을 지어낸다. 검색용에만 있던 본문 수집을 홈판에도 붙였다(사실 오류의 최대 원인).
+    //   리뷰형은 내 경험 기반이라 위 조건(type !== 'review')에서 이미 제외된다.
+    try { keywordArticles = await fetchNewsArticles(keyword, { limit: 2, maxLen: 1600 }); }
+    catch (e) { keywordArticles = null; }
+    if (keywordArticles && !keywordArticles.length) keywordArticles = null;
     // ★② 인물 배경(과거 이력) = 나무위키 1순위. 최신 뉴스를 "문맥"으로 넘겨 동명이인 판별.
     //   ★직업어(배우·가수 등)를 앞에 붙이면 나무위키가 못 찾는다("배우 하영" 실패 → "하영" 성공). 이름만으로 조회.
     const personName = String(core).replace(/^(배우|가수|감독|모델|개그맨|개그우먼|아나운서|방송인|유튜버|트로트\s*가수|인플루언서|셀럽|프로게이머|코미디언)\s+/, '').trim() || core;
@@ -250,8 +259,28 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
 
   let best = null; // 전부 실패해도 그나마 가장 긴 결과를 반환
 
+  // ★마무리 — 제목 벼리기 + 팩트 대조 + 수집 진단을 결과에 실어 보낸다.
+  //   팩트 대조는 "경고"이지 차단이 아니다(근거 밖이라고 다 거짓은 아니므로 판단은 사람이).
+  const _finish = async (cand) => {
+    const out = await finalizeTitle(cand, { type, keyword, keywordFacts, refTitles, model });
+    if (out) {
+      try {
+        out.factCheck = await factCheckPost({
+          post: out.post, facts: keywordFacts, articles: keywordArticles,
+          background: keywordBackground, placeReviews,
+        });
+        _tlog('★팩트 대조: ' + (out.factCheck.ran
+          ? ('지적 ' + out.factCheck.issues.length + '건(위험 ' + out.factCheck.highCount + ')')
+          : ('생략 — ' + (out.factCheck.reason || ''))));
+      } catch (e) { out.factCheck = { ran: false, issues: [], highCount: 0, reason: e.message }; }
+      try { out.scrapeHealth = scrapeHealth.report(); } catch (e) {}
+    }
+    return out;
+  };
+
   _tlog('리서치 완료 → 생성 시작');
   _tlog('  ▶모은 팩트(최신뉴스): ' + ((keywordFacts || []).slice(0, 10).join('  |  ') || '(없음)'));
+  _tlog('  ▶모은 기사본문: ' + ((keywordArticles || []).map((a) => (a.title || '').slice(0, 24) + '(' + (a.body || '').length + '자)').join('  |  ') || '(없음)'));
   _tlog('  ▶모은 배경: ' + ((keywordBackground || []).slice(0, 6).join('  |  ') || '(없음)'));
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // 재시도부터는 직전 실패 이유(특히 길이 부족)를 프롬프트에 붙인다.
@@ -264,7 +293,7 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
           }
         : null;
 
-    const user = buildUserPrompt({ keyword, keywordFacts, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews: reviewList, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends: trendList, typeLabel: postType.label, avoidKeywords, headingTarget, cardMode, contentForm });
+    const user = buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews: reviewList, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends: trendList, typeLabel: postType.label, avoidKeywords, headingTarget, cardMode, contentForm });
     const _tq = Date.now();
     const { text, meta } = await runClaude({ system, user, model });
     _tlog('★runClaude 생성 attempt' + attempt + ' = ' + Math.round((Date.now() - _tq) / 1000) + 's');
@@ -342,7 +371,7 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
       (validation.issues || []).some((s) => /미완성|잘림|빈\s*본문|빈\s*소제목|소제목\s*\d+개\s*—\s*최소\s*4개/.test(s)) ||
       validation.bodyLength < postType.length.min; // 1500자 하드 플로어
     _tlog('attempt' + attempt + ' 검증 ' + (validation.ok ? 'OK ✓' : (_severe ? '치명적→재생성' : '경미(채택)') + ' 사유:' + (validation.issues || []).join(' / ')));
-    if (validation.ok || !_severe) return await finalizeTitle(candidate, { type, keyword, keywordFacts, refTitles, model }); // 통과 또는 완성글(경미 미달) → 채택
+    if (validation.ok || !_severe) return await _finish(candidate); // 통과 또는 완성글(경미 미달) → 채택
 
     // 치명적(잘림)이면 더 긴 쪽을 보관하고 재시도
     if (!best || validation.bodyLength > best.validation.bodyLength) {
@@ -351,7 +380,7 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
     best.attempts = attempt;
   }
 
-  return await finalizeTitle(best, { type, keyword, keywordFacts, refTitles, model }); // 마지막까지 미달이면 가장 나은 결과 + 제목 벼림
+  return await _finish(best); // 마지막까지 미달이면 가장 나은 결과 + 제목 벼림
 }
 
 /**

@@ -39,6 +39,10 @@ function cropTopBanner(filePath, pct = 0.4) {
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+// ★네이버·외부 사이트 마크업 의존부(셀렉터·페이지 추출 스크립트)는 전부 여기 한 곳.
+const M = require('../src/scrape/markup');
+// ★수집 자가진단 — "조용한 0건"(구조 변경)을 생성 결과에 실어 보낸다.
+const scrapeHealth = require('../src/scrape/health');
 
 // ★앱 표시 이름. userData 폴더는 이름과 분리해 고정(이름을 바꿔도 로그인 세션이 유지되게).
 try { app.setPath('userData', path.join(app.getPath('appData'), 'blog-auto')); } catch (e) {}
@@ -204,7 +208,6 @@ function logTokenUsage(kind, kw, meta) {
 // ★★공식 출처 사이트에서 "이미지"를 직접 수집한다(정책·정부 주제). AI브리핑이 인용한 공식 페이지(부평복지ON·or.kr 등)를
 //   렌더 → 콘텐츠 이미지 추출(로고·아이콘·배너 제외) → 다운로드. 쓸만한 이미지가 없으면 그 페이지를 통째로 "캡쳐"해서 이미지로.
 //   반환: [{ path, press:'공식 출처', official:true, fromCapture:bool, siteHost }]  (사용자 확정: 정책은 공식 사이트 이미지가 1순위)
-const _OFFICIAL_IMG_EXTRACT = "(function(){function abs(u){try{return new URL(u,location.href).href;}catch(e){return u;}}var out=[],seen={};[].slice.call(document.querySelectorAll('img')).forEach(function(i){var s=i.currentSrc||i.src||i.getAttribute('data-src')||'';if(!s||/^data:/.test(s))return;var w=i.naturalWidth||i.width||0,h=i.naturalHeight||i.height||0;if(w&&h&&(w<220||h<160))return;if(/logo|icon|sprite|banner|btn[_-]|button|favicon|profile|thumb_s|blank|spacer|footer|header_/i.test(s))return;var u=abs(s);if(seen[u])return;seen[u]=1;out.push({url:u,w:w,h:h});});out.sort(function(a,b){return (b.w*b.h)-(a.w*a.h);});return JSON.stringify(out.slice(0,8));})()";
 async function collectOfficialSiteImages(urls, outDir, { maxPerSite = 4, maxSites = 3 } = {}) {
   const fs = require('fs');
   // ★다운로드 파일(.hwp·pdf·문서·zip)이나 /download 링크는 제외 — 열면 저장 대화상자가 떠서 앱이 멈춘다(법무부 .hwp 등).
@@ -221,7 +224,7 @@ async function collectOfficialSiteImages(urls, outDir, { maxPerSite = 4, maxSite
       await new Promise((r) => setTimeout(r, 3200));
       // 1) 페이지 안의 콘텐츠 이미지 추출 → 다운로드
       let imgs = [];
-      try { const j = await win.webContents.executeJavaScript(_OFFICIAL_IMG_EXTRACT); imgs = JSON.parse(typeof j === 'string' ? j : '[]'); } catch (e) { imgs = []; }
+      try { const j = await win.webContents.executeJavaScript(M.OFFICIAL_IMG_EXTRACT); imgs = JSON.parse(typeof j === 'string' ? j : '[]'); } catch (e) { imgs = []; }
       const dled = await downloadImagesToDir(imgs.map((x) => ({ url: x.url, press: '공식 출처' })), outDir, { max: maxPerSite });
       if (dled.length) {
         dled.forEach((f) => { f.press = '공식 출처'; f.official = true; f.siteHost = host; });
@@ -245,14 +248,13 @@ async function collectOfficialSiteImages(urls, outDir, { maxPerSite = 4, maxSite
 
 // ★Pexels(무료 스톡) 이미지 수집 — 서버 fetch는 Cloudflare로 차단(403)되므로 Electron 브라우저로 렌더 후 URL 추출.
 //   동양인 위주로 "korean/asian"을 붙여 검색. 반환: [{url}] (images.pexels.com 원본, w=1200로 요청).
-const _PEXELS_EXTRACT = "(function(){var seen={},out=[];[].slice.call(document.querySelectorAll('img')).forEach(function(i){var s=i.src||i.getAttribute('data-src')||i.getAttribute('srcset')||'';var m=s.match(/https:\\/\\/images\\.pexels\\.com\\/photos\\/\\d+\\/[^\"'?\\s]+\\.(?:jpe?g|png)/i);if(!m)return;var u=m[0];if(seen[u])return;seen[u]=1;out.push(u+'?auto=compress&cs=tinysrgb&w=1200');});return JSON.stringify(out.slice(0,20));})()";
 async function fetchPexelsImages(query, { limit = 8 } = {}) {
   try {
     const q = String(query || '').trim();
     if (!q) return [];
     // 동양인 위주 + 인물 얼굴 회피는 비전이 처리. 한국어 검색 페이지.
     const url = 'https://www.pexels.com/ko-kr/search/' + encodeURIComponent(q + ' korean') + '/';
-    const r = await scrapeRendered(url, _PEXELS_EXTRACT, 4000, 'persist:naver', _DESKTOP_UA_OF);
+    const r = await scrapeRendered(url, M.PEXELS_EXTRACT, 4000, 'persist:naver', _DESKTOP_UA_OF);
     let arr = [];
     try { arr = JSON.parse(typeof r === 'string' ? r : '[]'); } catch (e) { arr = []; }
     return (Array.isArray(arr) ? arr : []).slice(0, limit).map((u) => ({ url: u, title: q, pexels: true }));
@@ -261,7 +263,6 @@ async function fetchPexelsImages(query, { limit = 8 } = {}) {
 
 // ★네이버 이미지 수집 — 검색 결과에서 이미지 URL을 뽑고, 블로그 출처(워터마크 위험)는 제외.
 //   프록시(search.pstatic.net/common?src=원본)에서 원본 URL 디코드. 뉴스·방송·기타만 남긴다.
-const IMG_EXTRACT = "(function(){function dec(u){try{var m=u.match(/[?&]src=([^&]+)/);return m?decodeURIComponent(m[1]):u;}catch(e){return u;}}var seen={},out=[];[].slice.call(document.querySelectorAll('img')).forEach(function(i){var s=i.src||i.getAttribute('data-src')||'';if(!/search\\.pstatic\\.net\\/common/.test(s))return;var u=dec(s);if(seen[u])return;seen[u]=1;var host=(u.match(/^https?:\\/\\/([^\\/]+)/)||[''])[1]||'';out.push({url:u,host:host,proxy:s});});return JSON.stringify(out.slice(0,30));})()";
 async function collectNaverImages(query, { limit = 15 } = {}) {
   const url = 'https://search.naver.com/search.naver?where=image&sort=1&query=' + encodeURIComponent(query);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -272,7 +273,7 @@ async function collectNaverImages(query, { limit = 15 } = {}) {
     await sleep(2000);
     // 스크롤로 lazy-load 더 불러오기(뉴스/방송 이미지 확보)
     for (let i = 0; i < 5; i++) { await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)').catch(() => {}); await sleep(900); }
-    list = JSON.parse(await win.webContents.executeJavaScript(IMG_EXTRACT));
+    list = JSON.parse(await win.webContents.executeJavaScript(M.NAVER_IMG_EXTRACT));
   } catch (e) { list = []; } finally { try { win.destroy(); } catch (e) {} }
   // ★블로그·카페·커뮤니티·리뷰 출처(워터마크·개인사진 위험) 제외. 뉴스·방송·공식·인스타·연예매체만 남긴다.
   const isBlog = (h) => /blogfiles|blog\.naver|postfiles|blogthumb|blogpfthumb|mblogthumb|cafefiles|cafethumb|tistory|egloos|dcinside|brunch|velog|wordpress|ppomppu|clien|instiz|theqoo|fmkorea|ruliweb|mlbpark|82cook|missycoupons|inven|todayhumor|bobaedream|slrclub|kakaocdn|daumcdn|pstatic\.net\/.*blog/i.test(h || '');
@@ -285,30 +286,28 @@ async function collectNaverImages(query, { limit = 15 } = {}) {
 }
 
 // (개발) 엔터/스포츠 랭킹 페이지의 리스트 구조를 로그로 덤프 — 셀렉터 찾기용.
-const DISCOVER_DUMP = "(function(){var out=[];document.querySelectorAll('ol,ul').forEach(function(l){var lis=l.querySelectorAll('li');if(lis.length>=5&&lis.length<=30){out.push({cls:(l.className||'').toString().slice(0,60),count:lis.length,sample:[].slice.call(lis).slice(0,3).map(function(li){return (li.textContent||'').replace(/\\s+/g,' ').trim().slice(0,45);})});}});return JSON.stringify(out.slice(0,10),null,1);})()";
 
 // ★엔터/스포츠 랭킹 추출 스크립트(해시 클래스는 바뀔 수 있어 접두어로 매칭). 앞의 순위숫자 제거.
-const ENT_URL = 'https://m.entertain.naver.com/ranking';
-const SPT_URL = 'https://m.sports.naver.com/ranking/index?type=popular';
-const ENT_EXTRACT = "(function(){var out=[],seen={};document.querySelectorAll('[class*=\"NewsList_news_list\"] li').forEach(function(li){var t=(li.textContent||'').replace(/\\s+/g,' ').trim().replace(/^\\d+위\\s*/,'').trim();if(t&&t.length>5&&!seen[t]){seen[t]=1;out.push(t.slice(0,70));}});return JSON.stringify({items:out.slice(0,12)});})()";
-const SPT_EXTRACT = "(function(){var out=[],seen={};document.querySelectorAll('[class*=\"NewsRanking_news_list\"] li').forEach(function(li){var t=(li.textContent||'').replace(/\\s+/g,' ').trim().replace(/^\\d+\\.?\\s*/,'').trim();if(t&&t.length>5&&!seen[t]){seen[t]=1;out.push(t.slice(0,70));}});return JSON.stringify({items:out.slice(0,12)});})()";
 
 // 엔터/스포츠 랭킹 캐시 — 백그라운드로 갱신, 생성 시엔 캐시만 읽어 느려지지 않게.
 let entSpCache = [];
 async function refreshEntertainSports() {
   try {
     const [ent, spt] = await Promise.all([
-      scrapeRendered(ENT_URL, ENT_EXTRACT),
-      scrapeRendered(SPT_URL, SPT_EXTRACT),
+      scrapeRendered(M.ENT_URL, M.ENT_EXTRACT),
+      scrapeRendered(M.SPT_URL, M.SPT_EXTRACT),
     ]);
     const out = [];
     const parse = (d, src) => {
       try { (JSON.parse(d).items || []).forEach((t) => out.push({ keyword: t, rising: true, source: src })); } catch (e) {}
     };
-    parse(ent, 'naver-ent');
-    parse(spt, 'naver-sports');
+    const nEnt = out.length; parse(ent, 'naver-ent');
+    const entCount = out.length - nEnt; parse(spt, 'naver-sports');
+    scrapeHealth.record('ent-ranking', entCount);
+    scrapeHealth.record('spt-ranking', out.length - entCount);
     if (out.length) { entSpCache = out; console.log('[entSp] 갱신', out.length, '개'); }
-  } catch (e) { /* 실패해도 캐시 유지 */ }
+    else console.warn('[entSp] 0건 — 랭킹 페이지 구조가 바뀌었을 수 있음 (src/scrape/markup.js ENT_EXTRACT/SPT_EXTRACT)');
+  } catch (e) { scrapeHealth.record('ent-ranking', 0); scrapeHealth.record('spt-ranking', 0); /* 실패해도 캐시 유지 */ }
 }
 
 // ★구글 트렌드(실시간 48h) 스크랩 — 검색량·연관어 있는 씨앗 몸통. 웹뷰 렌더(데스크톱 UA + 긴 대기).
@@ -319,8 +318,10 @@ async function refreshGoogleTrends() {
   try {
     const raw = await scrapeRendered(GT_URL, GT_EXTRACT, 5500, 'persist:gt', DESKTOP_UA);
     const list = typeof raw === 'string' ? JSON.parse(raw) : (raw && !raw.error ? raw : []);
+    scrapeHealth.record('google-trends', Array.isArray(list) ? list.length : 0);
     if (Array.isArray(list) && list.length) { gtCache = list; console.log('[gtrends] 갱신', list.length, '개'); }
-  } catch (e) { /* 실패해도 캐시 유지 */ }
+    else console.warn('[gtrends] 0건 — 구글 트렌드 구조가 바뀌었을 수 있음 (src/keyword/googleTrends.js)');
+  } catch (e) { scrapeHealth.record('google-trends', 0); /* 실패해도 캐시 유지 */ }
 }
 
 // ★우리 모듈은 앱 루트(../src) 기준. Electron에서도 그대로 require.
@@ -889,7 +890,7 @@ app.whenReady().then(async () => {
       let officialFacts = null;
       if (!source && !review && keyword) { try { officialFacts = await fetchOfficialFacts(keyword); } catch (e) { officialFacts = null; } }
       const result = await generateSearchPost({ topic, keyword: keyword || '', extra: extra || '', style: style || '', memo: memo || '', paid: paid || '', commerce: commerce || '', source: source || null, linkNote: (source && source.note) || '', persona: persona || '', avoidKeywords: avoid, officialFacts, review: review || null });
-      const { post, validation, meta, attempts } = result;
+      const { post, validation, meta, attempts, factCheck, scrapeHealth: health } = result;
       logTokenUsage('검색', keyword || (post && post.title) || '', meta);
       // ★쓴 키워드(또는 모델이 정한 제목 키워드)를 최근 목록에 저장 → 다음 생성/예약에서 회피.
       try {
@@ -898,7 +899,7 @@ app.whenReady().then(async () => {
       } catch (e) {}
       // ★AI브리핑이 인용한 공식 출처 URL을 함께 반환 → 앱이 그 공식 사이트 이미지를 1순위로 수집(정책·정부 주제).
       const officialUrls = (officialFacts && Array.isArray(officialFacts.urls)) ? officialFacts.urls : [];
-      return { ok: true, post, validation, meta, attempts, officialUrls };
+      return { ok: true, post, validation, meta, attempts, officialUrls, factCheck: factCheck || null, scrapeHealth: health || null };
     } catch (e) { try { if (/exited with code|process|spawn|ENOENT|bash|not found/i.test(e && e.message || '')) diagnoseClaudeSpawn('generate:search ' + (e && e.message)); } catch (_) {} return { ok: false, error: e.message }; }
   });
 
@@ -922,7 +923,7 @@ app.whenReady().then(async () => {
         } catch (e) { rankedTrends = null; }
       }
 
-      const { post, validation, meta, attempts, trends } = await generatePost({
+      const { post, validation, meta, attempts, trends, factCheck, scrapeHealth: health } = await generatePost({
         type, keyword: keyword || '', tone: tone || '존댓말', style: style || '', persona: persona || '', fan: fan || '', places: places || [], reviews: reviews || [], coupangLinks: coupangLinks || [], reviewInfo: reviewInfo || null, reviewOpts: reviewOpts || null,
         headingTarget: headingTarget || null, cardMode: cardMode || false, contentForm: contentForm || 'auto',
         trends: rankedTrends, extraTrends: rankedTrends ? [] : entSpCache, avoidKeywords,
@@ -931,7 +932,15 @@ app.whenReady().then(async () => {
       logTokenUsage('홈판', keyword || (post && post.title) || '', meta);
       // 이번 소재 저장(다음 생성부터 회피)
       if (post && post.title) saveRecentTopic({ title: post.title, keyword: keyword || '' });
-      return { ok: true, post, validation, meta, attempts, trends: trends || [] };
+      // ★팩트 대조에서 지적이 나오면 파일로도 남긴다(화면 경고는 렌더러가 표시).
+      try {
+        if (factCheck && factCheck.ran && factCheck.issues.length) {
+          const lines = factCheck.issues.map(function (i) { return '[' + i.verdict + '/' + i.severity + '] ' + i.text + '  <- ' + i.why; }).join('\n');
+          fs.appendFileSync(path.join(app.getPath('userData'), 'factcheck.log'),
+            '\n[' + new Date().toLocaleString() + '] ' + (keyword || (post && post.title) || '') + '\n' + lines + '\n');
+        }
+      } catch (e) {}
+      return { ok: true, post, validation, meta, attempts, trends: trends || [], factCheck: factCheck || null, scrapeHealth: health || null };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -2061,8 +2070,8 @@ app.whenReady().then(async () => {
   // (개발) 랭킹 구조 덤프 — DISCOVER=1 일 때만.
   if (process.env.DISCOVER === '1') {
     setTimeout(() => {
-      scrapeRendered(ENT_URL, DISCOVER_DUMP).then((d) => console.log('\n===[ENT]===\n' + d));
-      scrapeRendered(SPT_URL, DISCOVER_DUMP).then((d) => console.log('\n===[SPT]===\n' + d));
+      scrapeRendered(M.ENT_URL, M.DISCOVER_DUMP).then((d) => console.log('\n===[ENT]===\n' + d));
+      scrapeRendered(M.SPT_URL, M.DISCOVER_DUMP).then((d) => console.log('\n===[SPT]===\n' + d));
     }, 2000);
   }
   // (개발) 네이버 이미지 수집+필터 테스트 — 블로그 출처(워터마크) 제외, 뉴스/방송만 남기기.

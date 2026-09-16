@@ -19,6 +19,8 @@ const {
 } = require('./buildSearchPrompt');
 const { fetchAutocomplete } = require('../keyword/expand');
 const { fetchNewsArticles, fetchBlogFacts, fetchPlaceReviews, fetchNearbyAttractions } = require('../keyword/trends');
+const scrapeHealth = require('../scrape/health');
+const { factCheckPost } = require('./factCheck');
 
 // ★네이버 지도 검색어 = "지역 상호명"으로만(사용자 확정 2026-08-26). 프랜차이즈 지점 구분은 사용자가 가게 이름에 지점까지 적어줌(UI 안내).
 //   플레이스 조회로 얻은 공식 이름(지점명 포함) 앞에 지역(시/군)만 붙인다. 지역 못 뽑으면 상호명만.
@@ -55,6 +57,7 @@ async function extractMainKeyword(title, text, model) {
 
 async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3 } = {}) {
   const searchTopic = getSearchTopic(topic); // 잘못된 주제면 여기서 예외
+  scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   const system = buildSearchSystemPrompt(topic);
 
   // ★링크형 — 키워드 없이 링크만 준 경우, 링크 제목에서 "네이버 검색용 메인 키워드" 1개를 뽑는다(가벼운 하이쿠).
@@ -136,6 +139,19 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
   }
 
   let best = null;
+
+  // ★마무리 — 팩트 대조 + 수집 진단을 결과에 실어 보낸다(경고이지 차단이 아니다).
+  const _finish = async (cand) => {
+    if (!cand) return cand;
+    try {
+      cand.factCheck = await factCheckPost({
+        post: cand.post, facts: keywordFacts, articles: newsArticles,
+        background: keywordBackground, placeReviews,
+      });
+    } catch (e) { cand.factCheck = { ran: false, issues: [], highCount: 0, reason: e.message }; }
+    try { cand.scrapeHealth = scrapeHealth.report(); } catch (e) {}
+    return cand;
+  };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const retry =
@@ -323,7 +339,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     const validation = validateSearchPost(post, searchTopic);
 
     const candidate = { post, validation, meta, attempts: attempt };
-    if (validation.ok) return candidate;
+    if (validation.ok) return await _finish(candidate);
 
     if (!best || validation.bodyLength > best.validation.bodyLength) {
       best = candidate;
@@ -331,7 +347,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     best.attempts = attempt;
   }
 
-  return best;
+  return await _finish(best);
 }
 
 /** 블록 하나의 "본문 글자수"를 센다. 표·Q&A도 실제 텍스트를 합산. */

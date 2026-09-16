@@ -541,7 +541,7 @@ const VOICE_STYLES = [
   '팩트를 딱딱 정리해주는 똑부러진 정보 전달체로',
 ];
 
-function buildUserPrompt({ keyword, keywordFacts, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends, typeLabel, avoidKeywords, headingTarget, cardMode, contentForm } = {}) {
+function buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends, typeLabel, avoidKeywords, headingTarget, cardMode, contentForm } = {}) {
   const lines = [];
   let hasFacts = false;
   const _now = new Date();
@@ -747,6 +747,18 @@ function buildUserPrompt({ keyword, keywordFacts, keywordBackground, keywordAngl
       lines.push('[선점 유리한 틈새 각도 — 경쟁 낮아 상위노출 유리, 제목·핵심 섹션에 적극 반영]');
       nicheAngles.forEach((a) => lines.push(`  ◎ ${a}`));
       lines.push(`- "${keyword}" 단독은 경쟁이 치열하다. 위 "빈틈 큰 세부 각도"를 제목과 본문 핵심에 녹여 선점한다(예: 지역·세부 인텐트 조합).`);
+    }
+    // ★★★기사 "본문" — 제목·스니펫(180자)만으론 세부가 없어 모델이 살을 지어낸다. 실제 본문이 최우선 근거.
+    if (Array.isArray(keywordArticles) && keywordArticles.length) {
+      hasFacts = true;
+      lines.push('');
+      lines.push(`[★★★실제 기사 본문 (사실의 최우선 근거) — "${keyword}" 관련 최신 기사 ${keywordArticles.length}건의 실제 본문]`);
+      keywordArticles.slice(0, 3).forEach((a, i) => {
+        lines.push(`  ◆ 기사${i + 1}${a.title ? '(' + String(a.title).slice(0, 50) + ')' : ''}: ${String(a.body || '').slice(0, 1400)}`);
+      });
+      lines.push('- ★★구체 사실(날짜·수치·스코어·순위·직함·소속·발언)은 "위 본문에 실제로 적힌 것"만 쓴다. 본문에 없는 세부를 지어내지 마라.');
+      lines.push('- ★본문에 있는 구체 디테일(장면·발언·배경 설명)을 적극 활용해 글을 두툼하게 채워라. 여러 기사에 공통으로 나온 사실일수록 확실하다.');
+      lines.push('- 단 기사를 그대로 요약·번역하지 마라. 홈판 발견형 글로 "재구성"한다.');
     }
     if (keywordFacts && keywordFacts.length) {
       hasFacts = true;
