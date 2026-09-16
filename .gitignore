@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# 로컬 세션·자격증명은 userData(앱 데이터 폴더)에만 — 저장소에 두지 않음
+*cookies*.json
+*auth*.json
+*token*.json
