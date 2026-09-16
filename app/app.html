@@ -853,18 +853,18 @@
     note.style.color='#c0392b';
     setTimeout(function(){ try{ note.style.color=''; if(byId('type-home').value==='review') note.innerHTML='리뷰형은 <b>직접 입력(수동)</b> 전용이에요. 위에서 대상·방식을 고르고 정보를 넣어주세요.'; }catch(e){} }, 4000);
   }
-  // 리뷰형 아닐 때 모드 세그 잠금 해제 + 리뷰형 수동고정 잔재 원복(자동으로).
+  // 리뷰형 아닐 때 모드 세그 잠금 해제 + 자동으로 초기화.
   function unlockMode(){
     var seg=byId('mode-home'); if(!seg) return;
-    // ★잠금만 풀고 "현재 모드는 유지"한다(유형 바꿔도 수동→자동으로 튀지 않게 — 사용자 요청).
+    // ★잠금 잔재(locked·커서·툴팁·흐림)를 전부 원복.
     seg.querySelectorAll('.s').forEach(function(s){ s.dataset.locked=''; s.style.pointerEvents=''; s.style.opacity=''; s.style.cursor=''; s.title=''; });
-    if(!seg.querySelector('.s.on')){ var a=seg.querySelector('.s[data-mode="auto"]'); if(a) a.classList.add('on'); } // 켜진 게 없으면 기본 자동
-    var curOn=seg.querySelector('.s.on');
-    var isManual = !!(curOn && curOn.dataset.mode==='manual');
-    byId('kwbox-home').style.display = isManual ? 'block' : 'none';
-    byId('modenote-home').innerHTML = isManual
-      ? '수동 — 내가 넣은 <b>키워드</b>로, 지금 사람들이 가장 궁금해하는 걸 반영해요.'
-      : '자동 — 고른 유형에 맞춰 <b>많이 검색 + 틈새</b> 키워드를 알아서 골라요.';
+    // ★유형을 바꾸면 항상 [자동]으로 돌아간다 — 이전 유형에서 넣은 키워드가 새 유형에 그대로 남아
+    //   엉뚱한 글이 나오는 것을 막는다(리뷰형에서 빠져나올 때 수동으로 갇히는 문제도 함께 해소).
+    seg.querySelectorAll('.s').forEach(function(s){ s.classList.toggle('on', s.dataset.mode==='auto'); });
+    window._trendPick = null;                                   // 이전 유형에서 고른 트렌드 키워드 해제
+    var seed=byId('seed-home'); if(seed) seed.value='';         // 이전 유형에서 입력한 키워드 비움
+    byId('kwbox-home').style.display='none';
+    byId('modenote-home').innerHTML='자동 — 고른 유형에 맞춰 <b>많이 검색 + 틈새</b> 키워드를 알아서 골라요.';
   }
 
   byId('type-home').addEventListener('change', function(){ fillStyles(); try{ if(byId('pin-settings').checked) localStorage.setItem('pinnedSettings', JSON.stringify(collectSettings())); }catch(e){} }); // ★유형 바꾸면 (고정 켜져 있을 때) 즉시 저장 — 다음에 앱 켜도 옛 유형(금융)으로 안 되돌아가게
