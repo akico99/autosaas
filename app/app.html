@@ -733,8 +733,11 @@
     }
   }));
 
+  // ★잠긴 항목(data-locked="1")은 선택을 바꾸지 않고 onChange(s, true)만 부른다 —
+  //   pointer-events:none 으로 막으면 클릭 자체가 안 먹어 "왜 안 되는지" 알 수가 없다(=고장으로 보임).
   function bindSeg(el, onChange){ el.querySelectorAll('.s').forEach((s)=>s.addEventListener('click',()=>{
-    el.querySelectorAll('.s').forEach((x)=>x.classList.remove('on')); s.classList.add('on'); if(onChange) onChange(s);
+    if(s.dataset.locked==='1'){ if(onChange) onChange(s, true); return; }
+    el.querySelectorAll('.s').forEach((x)=>x.classList.remove('on')); s.classList.add('on'); if(onChange) onChange(s, false);
   })); }
 
   // ★유형별 말투 스타일 (실제 홈판 블로그 학습에서 뽑음, 다 존댓말). 유형 고르면 그 유형 스타일 목록으로.
@@ -834,16 +837,27 @@
       var man=s.dataset.mode==='manual';
       s.classList.toggle('on',man);
       var auto=s.dataset.mode==='auto';
-      s.style.pointerEvents=auto?'none':''; s.style.opacity=auto?'0.4':'';
+      // ★클릭은 살려둔다(data-locked) — 눌러보면 왜 안 되는지 알려주기 위해. 회색+금지커서로 잠김 표시.
+      s.dataset.locked=auto?'1':'';
+      s.style.pointerEvents=''; s.style.opacity=auto?'0.4':''; s.style.cursor=auto?'not-allowed':'';
+      s.title=auto?'리뷰형은 내가 다녀온 곳·내 사진으로 쓰는 글이라 키워드 자동 선정을 쓰지 않아요.':'';
     });
     byId('kwbox-home').style.display='none'; // 리뷰형은 자체 입력칸 사용
     byId('modenote-home').innerHTML='리뷰형은 <b>직접 입력(수동)</b> 전용이에요. 위에서 대상·방식을 고르고 정보를 넣어주세요.';
+  }
+  // ★잠긴 [자동]을 눌렀을 때 — 이유를 알려주고, 자동을 쓰려면 어떻게 하는지까지 짚어준다.
+  function explainModeLock(){
+    var note=byId('modenote-home'); if(!note) return;
+    note.innerHTML='🔒 <b>리뷰형은 자동을 쓸 수 없어요.</b> 내가 다녀온 곳·내 사진으로 쓰는 글이라 키워드를 자동으로 고를 수 없거든요.<br>'
+      + '👉 자동으로 쓰려면 위 <b>유형</b>을 리뷰형이 아닌 다른 유형(연예·금융·정책·테크·자동차·스포츠·라이프)으로 바꿔주세요.';
+    note.style.color='#c0392b';
+    setTimeout(function(){ try{ note.style.color=''; if(byId('type-home').value==='review') note.innerHTML='리뷰형은 <b>직접 입력(수동)</b> 전용이에요. 위에서 대상·방식을 고르고 정보를 넣어주세요.'; }catch(e){} }, 4000);
   }
   // 리뷰형 아닐 때 모드 세그 잠금 해제 + 리뷰형 수동고정 잔재 원복(자동으로).
   function unlockMode(){
     var seg=byId('mode-home'); if(!seg) return;
     // ★잠금만 풀고 "현재 모드는 유지"한다(유형 바꿔도 수동→자동으로 튀지 않게 — 사용자 요청).
-    seg.querySelectorAll('.s').forEach(function(s){ s.style.pointerEvents=''; s.style.opacity=''; });
+    seg.querySelectorAll('.s').forEach(function(s){ s.dataset.locked=''; s.style.pointerEvents=''; s.style.opacity=''; s.style.cursor=''; s.title=''; });
     if(!seg.querySelector('.s.on')){ var a=seg.querySelector('.s[data-mode="auto"]'); if(a) a.classList.add('on'); } // 켜진 게 없으면 기본 자동
     var curOn=seg.querySelector('.s.on');
     var isManual = !!(curOn && curOn.dataset.mode==='manual');
@@ -1679,7 +1693,8 @@
   })();
 
   // 자동/수동
-  bindSeg(byId('mode-home'), (s)=>{
+  bindSeg(byId('mode-home'), (s, locked)=>{
+    if(locked){ explainModeLock(); return; }                                  // 잠긴 [자동] — 왜 안 되는지 알려준다
     if(byId('type-home').value==='review'){ forceManualForReview(); return; } // 리뷰형은 수동 고정
     const manual = s.dataset.mode==='manual';
     window._trendPick = null; // ★모드 바꾸면 트렌드 선택 해제(수동=직접입력, 자동=AI자동/트렌드픽)
