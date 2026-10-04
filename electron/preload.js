@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('api', {
   // 키워드 자동 수집(자동완성 확장 + 빈틈 점수)
   keywordRadar: (seed, useAction) =>
     ipcRenderer.invoke('keyword:radar', { seed, useAction }),
+  // 공식 검색광고 XLSX 선택 → 자동완성 병합 → 키워드 미리보기 생성
+  keywordReportPrepare: (options) => ipcRenderer.invoke('keyword-report:prepare', options || {}),
+  // 메인 프로세스에 준비된 결과를 저장 다이얼로그로 XLSX 내보내기
+  keywordReportExport: (options) => ipcRenderer.invoke('keyword-report:export', options || {}),
   // 크리에이터 어드바이저 트렌드 키워드(선택한 유형의 주제로 필터, 네이버 로그인 세션으로 수집)
   advisorTrends: (type) => ipcRenderer.invoke('advisor:trends', { type }),
   // 실제 글 생성(홈판용) — 구독 인증
@@ -13,7 +17,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('generate:post', { type, keyword, tone, style, ...(extras || {}) }),
   // 검색용 — 주제 목록 + 생성
   searchTopics: () => ipcRenderer.invoke('search:topics'),
-  generateSearch: (topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review) => ipcRenderer.invoke('generate:search', { topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review }),
+  generateSearch: (topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review, opts) => ipcRenderer.invoke('generate:search', { topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review, opts }),
+  perfList: () => ipcRenderer.invoke('perf:list'),
+  perfSync: (blogId) => ipcRenderer.invoke('perf:sync', { blogId }),
+  perfLink: (id, url) => ipcRenderer.invoke('perf:link', { id, url }),
+  perfCheck: () => ipcRenderer.invoke('perf:check'),
   getSearchRecent: () => ipcRenderer.invoke('searchRecent:get'),
   addSearchRecent: (keyword) => ipcRenderer.invoke('searchRecent:add', { keyword }),
   keywordUrlBackfill: (opts) => ipcRenderer.invoke('keyword:urlBackfill', opts || {}),

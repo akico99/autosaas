@@ -14,6 +14,16 @@ const https = require('https');
 const M = require('../scrape/markup');
 // ★수집 결과 건수를 기록해 "조용한 0건"(구조 변경)을 잡는다.
 const health = require('../scrape/health');
+const { guardedSearchFetch, NaverSearchBlockedError } = require('../scrape/naverSearchGuard');
+
+function isSearchBlockedError(error) {
+  return error instanceof NaverSearchBlockedError || !!(error && error.code === 'NAVER_SEARCH_BLOCKED');
+}
+
+async function fetchSearchHtml(url) {
+  const response = await guardedSearchFetch(url);
+  return response.body.toString('utf8');
+}
 
 // 원시 바이트로 받기(인코딩이 EUC-KR일 수 있어 문자열 concat 금지).
 function fetchBuffer(url, timeoutMs = 12000) {
@@ -119,14 +129,14 @@ async function fetchZum() {
 //   이걸 생성기에 주면 인물·사건을 지어내지 않고 실제 사실만 쓰게 된다. 무키(공개 검색).
 async function fetchNewsHeadlines(keyword) {
   try {
-    const html = (await fetchBuffer(M.searchUrl.news(keyword))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.news(keyword));
     // ★헤드라인(제목) + 요약 스니펫을 짝지어 "풍부한 사실"로 만든다.
     //   헤드라인만 주면 모델이 살을 지어냄(가짜 발언·틀린 별명) → 스니펫에 실제 내용이 있어 날조를 막는다.
     const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 180 });
     health.record('news-headlines', out.length, { query: keyword });
     return out;
   } catch (e) {
-    health.record('news-headlines', 0, { query: keyword });
+    health.record('news-headlines', 0, { query: keyword, blocked: isSearchBlockedError(e) });
     return [];
   }
 }
@@ -136,12 +146,12 @@ async function fetchNewsHeadlines(keyword) {
 async function fetchPlaceReviews(placeName) {
   try {
     const q = (placeName || '').trim() + ' 후기';
-    const html = (await fetchBuffer(M.searchUrl.blog(q))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.blog(q));
     const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 160 });
     health.record('place-reviews', out.length, { query: q });
     return out;
   } catch (e) {
-    health.record('place-reviews', 0, { query: placeName });
+    health.record('place-reviews', 0, { query: placeName, blocked: isSearchBlockedError(e) });
     return [];
   }
 }
@@ -156,8 +166,8 @@ async function fetchNearbyAttractions(region) {
   try {
     const reg = (region || '').trim();
     if (!reg) return [];
-    const url = 'https://search.naver.com/search.naver?where=nexearch&query=' + encodeURIComponent(reg + ' 가볼만한곳');
-    const html = (await fetchBuffer(url)).toString('utf8');
+    const query = reg + ' 가볼만한곳';
+    const html = await fetchSearchHtml(M.searchUrl.integrated(query));
     const names = [...html.matchAll(/"name":"([^"]{2,30})"/g)].map((m) => m[1].replace(/<[^>]+>/g, '').trim());
     // 앞머리 기관어 정리(농협경제지주 안성팜랜드 → 안성팜랜드)
     const clean = (n) => n.replace(/^(농협경제지주|주식회사|재단법인|사단법인|\(주\)|\(재\)|주\)|재\))\s*/, '').trim();
@@ -173,8 +183,10 @@ async function fetchNearbyAttractions(region) {
       out.push(n);
       if (out.length >= 6) break;
     }
+    health.record('serp', out.length, { query });
     return out;
   } catch (e) {
+    if (isSearchBlockedError(e)) health.record('serp', 0, { query: (region || '').trim() + ' 가볼만한곳', blocked: true });
     return [];
   }
 }
@@ -185,12 +197,12 @@ async function fetchNearbyAttractions(region) {
 async function fetchBlogFacts(keyword) {
   try {
     const kw = (keyword || '').trim();
-    const html = (await fetchBuffer(M.searchUrl.blog(kw))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.blog(kw));
     const out = M.grabTitleSnippetPairs(html, { max: 10, snippetLen: 200 }).slice(0, 8);
     health.record('blog-facts', out.length, { query: kw });
     return out;
   } catch (e) {
-    health.record('blog-facts', 0, { query: keyword });
+    health.record('blog-facts', 0, { query: keyword, blocked: isSearchBlockedError(e) });
     return [];
   }
 }
@@ -244,7 +256,7 @@ async function fetchArticleImages(keyword, { limit = 8 } = {}) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const html = (await fetchBuffer(M.searchUrl.news(kw))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.news(kw));
     const items = M.grabArticleRefs(html, 6);
     const out = []; const seenUrl = new Set();
     for (const it of items) {
@@ -257,13 +269,16 @@ async function fetchArticleImages(keyword, { limit = 8 } = {}) {
       }
     }
     return out;
-  } catch (e) { return []; }
+  } catch (e) {
+    if (isSearchBlockedError(e)) health.record('news-articles', 0, { query: keyword, blocked: true });
+    return [];
+  }
 }
 async function fetchNewsArticles(keyword, { limit = 3, maxLen = 1800 } = {}) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const html = (await fetchBuffer(M.searchUrl.news(kw))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.news(kw));
     const items = M.grabArticleRefs(html, limit + 5); // 기사 링크(스포츠·연예·일반) oid/aid
     const out = [];
     for (const it of items) {
@@ -273,7 +288,7 @@ async function fetchNewsArticles(keyword, { limit = 3, maxLen = 1800 } = {}) {
     }
     health.record('news-articles', out.length, { query: kw });
     return out;
-  } catch (e) { health.record('news-articles', 0, { query: keyword }); return []; }
+  } catch (e) { health.record('news-articles', 0, { query: keyword, blocked: isSearchBlockedError(e) }); return []; }
 }
 
 // ★이 주제로 "지금 네이버 상단에 뜬 실제 제목들" — 제목 작성 시 톤·각도 참고용(그대로 베끼지 말 것, 프롬프트에서 강제).
@@ -282,7 +297,7 @@ async function fetchTopTitles(keyword) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const html = (await fetchBuffer(M.searchUrl.blog(kw))).toString('utf8');
+    const html = await fetchSearchHtml(M.searchUrl.blog(kw));
     // 블로그 제목이 아닌 노이즈(지식백과·채널·위키 등) 제외.
     const isNoise = (t) =>
       /(?:^|[\-·|])\s*(?:나무위키|위키백과|namu\.?wiki|wikipedia|youtube|유튜브|블로그|포스트|네이버 지식|지식백과)\s*$/i.test(t) ||
@@ -297,7 +312,7 @@ async function fetchTopTitles(keyword) {
     health.record('top-titles', out.length, { query: kw });
     return out.slice(0, 10);
   } catch (e) {
-    health.record('top-titles', 0, { query: keyword });
+    health.record('top-titles', 0, { query: keyword, blocked: isSearchBlockedError(e) });
     return [];
   }
 }

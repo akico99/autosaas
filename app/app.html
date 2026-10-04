@@ -146,6 +146,41 @@
   .mcard button{flex:1;height:44px;border:0;border-radius:10px;font-size:13.5px;font-weight:800;cursor:pointer}
   .mcard .primary{background:var(--blue);color:#fff}
   .mcard .ghost{background:#eef1f5;color:var(--ink2)}
+
+  /* Search Ads XLSX keyword report — isolated from the blog editor and generation controls. */
+  .kw-page{display:none;flex:1;min-height:0;overflow:auto;padding:22px 24px;background:#f4f6fa}
+  body.keyword-tool-open .split{display:none}
+  body.keyword-tool-open .kw-page{display:flex;flex-direction:column;gap:16px}
+  body.keyword-tool-only #backHome,body.keyword-tool-only #keyword-report-open{display:none}
+  .kw-head{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  .kw-head h1{margin:0;font-size:21px;color:#1f2733}
+  .kw-head p{margin:4px 0 0;font-size:12px;color:#727d8d;line-height:1.5}
+  .kw-head button{margin-left:auto;flex:0 0 auto;border:1px solid #d6dbe4;background:#fff;color:#506075;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer}
+  .kw-grid{display:grid;grid-template-columns:minmax(245px,310px) minmax(0,1fr);gap:14px;min-height:0;flex:1}
+  .kw-card{background:#fff;border:1px solid #e2e7ef;border-radius:13px;padding:16px;min-width:0;box-shadow:0 2px 8px rgba(30,45,70,.035)}
+  .kw-form{align-self:start}
+  .kw-form label{display:block;margin-bottom:13px;font-size:12px;font-weight:800;color:#586474}
+  .kw-form input,.kw-form select{display:block;width:100%;height:38px;margin-top:6px;border:1px solid #dfe4eb;border-radius:8px;padding:0 10px;background:#fff;color:#1f2733;font:inherit;font-size:13px}
+  .kw-form .kw-help{font-size:11px;color:#8791a0;line-height:1.55;margin:-6px 0 12px}
+  .kw-primary,.kw-save{width:100%;height:42px;border:0;border-radius:9px;background:#2b6ef2;color:white;font-size:13px;font-weight:800;cursor:pointer}
+  .kw-primary:disabled,.kw-save:disabled{opacity:.55;cursor:wait}
+  .kw-save{background:#13804a;margin-top:8px}
+  .kw-status{display:none;margin-top:10px;padding:9px 10px;border-radius:8px;background:#eef5ff;color:#2456a5;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+  .kw-status.on{display:block}
+  .kw-status.error{background:#fff1f0;color:#a12822}
+  .kw-results{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .kw-result-head{display:flex;align-items:flex-start;gap:10px;justify-content:space-between;flex:0 0 auto}
+  .kw-result-head h2{font-size:15px;margin:0 0 4px}
+  .kw-result-meta{font-size:11px;color:#788394;line-height:1.55;overflow-wrap:anywhere}
+  .kw-summary{font-size:12px;font-weight:800;color:#2555a3;white-space:nowrap}
+  .kw-notes{margin:10px 0;padding:9px 10px;border:1px solid #f1dfb5;border-radius:8px;background:#fffaf0;color:#71591f;font-size:11px;line-height:1.55;flex:0 0 auto}
+  .kw-table-wrap{min-height:0;overflow:auto;border:1px solid #e8ecf2;border-radius:8px;flex:1}
+  .kw-table{width:100%;border-collapse:collapse;font-size:11px;white-space:nowrap}
+  .kw-table th,.kw-table td{padding:7px 8px;text-align:left;border-bottom:1px solid #edf0f4;vertical-align:top}
+  .kw-table th{position:sticky;top:0;background:#f7f9fc;color:#566172;font-weight:800;z-index:1}
+  .kw-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .kw-empty{padding:30px 12px;text-align:center;color:#8791a0;font-size:12px}
+  @media(max-width:860px){.kw-page{padding:14px}.kw-grid{grid-template-columns:1fr}.kw-results{min-height:420px}}
 </style>
 <style>
 /* ★썸네일형 미리보기용 웹폰트(편집기와 동일) */
@@ -161,9 +196,56 @@
 <body>
   <div class="topbar">
     <span class="brand">블로그 자동화</span>
+    <button id="keyword-report-open" type="button"
+      style="margin-left:auto;font-size:12px;font-weight:700;border:1px solid #c7dbff;background:#eef5ff;color:#1f5fd0;border-radius:8px;padding:7px 12px;cursor:pointer;-webkit-app-region:no-drag">키워드 조사</button>
     <button id="backHome" title="처음 로그인 화면으로 (네이버 아이디 변경)"
-      style="margin-left:auto;font-size:12px;font-weight:700;border:1px solid #d6dbe4;background:#f7f9fc;color:#5a6577;border-radius:8px;padding:7px 12px;cursor:pointer">◀ 처음 화면</button>
+      style="margin-left:8px;font-size:12px;font-weight:700;border:1px solid #d6dbe4;background:#f7f9fc;color:#5a6577;border-radius:8px;padding:7px 12px;cursor:pointer;-webkit-app-region:no-drag">◀ 처음 화면</button>
   </div>
+
+  <main class="kw-page" id="keyword-report-page" aria-labelledby="keyword-report-title">
+    <header class="kw-head">
+      <div>
+        <h1 id="keyword-report-title">네이버 키워드 조사</h1>
+        <p>검색광고 키워드 도구에서 받은 XLSX와 네이버 자동완성 후보를 합쳐 관련 키워드를 살펴봅니다.</p>
+      </div>
+      <button id="keyword-report-close" type="button">일반 화면</button>
+    </header>
+    <div class="kw-grid">
+      <section class="kw-card kw-form" aria-label="조사 조건">
+        <label for="keyword-report-seed">씨앗 키워드
+          <input id="keyword-report-seed" type="text" maxlength="80" value="사주" placeholder="예: 사주, 보험">
+        </label>
+        <label for="keyword-report-count">미리 볼 키워드 수
+          <select id="keyword-report-count">
+            <option value="30">30개</option><option value="50">50개</option><option value="100" selected>100개</option>
+          </select>
+        </label>
+        <label for="keyword-report-exclude">제외어 (쉼표로 구분)
+          <input id="keyword-report-exclude" type="text" maxlength="800" placeholder="예: 카리나, 사주카드">
+        </label>
+        <p class="kw-help">제외어가 들어간 키워드는 미리보기에서 제외합니다. 모호한 이름·상품명도 여기서 직접 제외할 수 있습니다.</p>
+        <button class="kw-primary" id="keyword-report-prepare" type="button">검색광고 XLSX 선택 후 후보 만들기</button>
+        <button class="kw-save" id="keyword-report-export" type="button" disabled>엑셀로 저장</button>
+        <div class="kw-status" id="keyword-report-status" role="status" aria-live="polite"></div>
+      </section>
+      <section class="kw-card kw-results" aria-label="키워드 미리보기">
+        <div class="kw-result-head">
+          <div>
+            <h2>미리보기</h2>
+            <div class="kw-result-meta" id="keyword-report-meta">조사 조건을 입력하고 XLSX 파일을 선택해 주세요.</div>
+          </div>
+          <div class="kw-summary" id="keyword-report-summary"></div>
+        </div>
+        <div class="kw-notes">검색량은 가져온 XLSX 값입니다. <b>&lt;10</b>은 그대로 표시하며 PC·모바일이 모두 숫자일 때만 합계를 냅니다. 가져온 날짜는 파일을 앱에 불러온 날짜이며, 원본의 정확한 검색량 집계 기간을 뜻하지 않습니다. 분류·의도는 키워드 문구에 따른 편집용 추정입니다.</div>
+        <div class="kw-table-wrap">
+          <table class="kw-table">
+            <thead><tr><th>키워드</th><th>PC</th><th>모바일</th><th>합계</th><th>분류</th><th>검색 의도</th><th>출처</th></tr></thead>
+            <tbody id="keyword-report-rows"><tr><td class="kw-empty" colspan="7">아직 미리보기가 없습니다.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
 
   <div class="split">
     <div class="editor">
@@ -604,7 +686,7 @@
               <div class="subnote">링크만 넣으면 <b>제품명을 자동으로 읽어</b> 제목·후기 재료로 쓰고, 글 안에 <b>상품 카드</b>가 들어가요(쿠팡은 <b>파트너스 고지문 자동</b>).<br>※ 제휴 링크가 있으면 <b>예약(자동) 발행은 미지원</b> — 만든 뒤 <b>수동으로 발행</b>해 주세요.</div>
             </div>
             <!-- 검색용 특징 안내 -->
-            <div class="sec"><div class="subnote">✅ 검색용은 <b>제목=메인+세부+후킹</b>, <b>표 1~2개</b>, 검색의도에 맞는 <b>정답 문단</b>, 개인경험을 자동으로 넣어드려요.<br>🖼️ 혹시 <b>워터마크(방송사 로고 등)가 있는 이미지</b>가 들어갔다면, 네이버 에디터에서 <b>이미지 클릭 → 자르기(크롭)</b>로 그 부분을 잘라 주세요.</div></div>
+            <div class="sec"><div class="subnote">✅ 검색용은 키워드의 검색 의도를 먼저 정하고, 그 의도에 필요한 답·근거를 기준으로 작성·검수해요. 직접 경험은 입력한 내용만 사용해요.<br>🖼️ 혹시 <b>워터마크(방송사 로고 등)가 있는 이미지</b>가 들어갔다면, 네이버 에디터에서 <b>이미지 클릭 → 자르기(크롭)</b>로 그 부분을 잘라 주세요.</div></div>
             <!-- ★검색용 스타일 (홈판과 동일 — 값은 홈판 탭과 공유돼요) -->
             <div class="sec">
               <div class="lbl">글씨체 <span class="note">· 홈판과 공유</span></div>
@@ -675,6 +757,27 @@
                 <button class="rfixbtn" id="sr-off" style="margin-top:6px">검색용 예약 끄기</button>
               </div>
             </div>
+            <details id="perf-panel" class="sec" style="padding:12px;border:1px solid var(--line);border-radius:11px;background:#fff">
+              <summary style="cursor:pointer;font-weight:800;color:var(--ink)">📈 검색 성과 추적</summary>
+              <div style="margin-top:10px">
+                <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+                  <label for="perf-blog-id" style="font-size:12px;font-weight:700">블로그 ID</label>
+                  <input id="perf-blog-id" type="text" style="width:150px" placeholder="네이버 블로그 ID">
+                  <button type="button" id="perf-sync" class="rfixbtn">발행 글 연결</button>
+                  <button type="button" id="perf-check" class="rfixbtn">순위 확인 (대상 0개)</button>
+                </div>
+                <div class="subnote" style="margin-top:7px">순위는 비로그인·PC 환경에서 관찰한 블로그 탭 1페이지 기준이에요. 개인화로 실제와 다를 수 있어요. 순위 확인은 한 번에 최대 6개만 해요.</div>
+                <div id="perf-blocked" style="display:none;margin-top:8px;padding:8px 10px;border:1px solid #efb2b2;border-radius:8px;background:#fff1f1;color:#a52626;font-size:12px;line-height:1.5"></div>
+                <div id="perf-status" class="subnote" style="margin-top:7px"></div>
+                <div style="overflow:auto;margin-top:8px">
+                  <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:680px">
+                    <thead><tr style="background:#f5f7fb"><th style="text-align:left;padding:6px">키워드</th><th style="padding:6px">의도</th><th style="padding:6px">생성 상태</th><th style="padding:6px">발행일</th><th style="padding:6px">최근 블로그 탭 순위</th><th style="text-align:left;padding:6px">확인 이력</th><th style="text-align:left;padding:6px">발행 글 연결</th></tr></thead>
+                    <tbody id="perf-entries"><tr><td colspan="7" style="padding:10px;color:#8b95a5">패널을 열면 최근 기록을 불러와요.</td></tr></tbody>
+                  </table>
+                </div>
+                <div id="perf-summary" style="margin-top:12px"></div>
+              </div>
+            </details>
             <div class="status" id="status-search"></div>
           </div>
         </div>
@@ -687,6 +790,8 @@
 
 <script>
   const byId = (id) => document.getElementById(id);
+  const keywordToolOnly = new URLSearchParams(window.location.search).get('mode') === 'keywords';
+  if (keywordToolOnly) document.body.classList.add('keyword-tool-only', 'keyword-tool-open');
   // ★현재 생성 컨텍스트(home/search) — 진행 안내를 "그 탭 하단"에 뜨게. (검색용 진행이 홈판에 뜨던 문제)
   window._genCtx = 'home';
   function _curSt(){ return byId(window._genCtx==='search'?'status-search':'status-home') || byId('status-home'); }
@@ -1116,8 +1221,20 @@
       // ★★새 생성 전 에디터를 먼저 비운다 — 이전 글의 이미지·본문(제네시스·투싼 등 다른 차)이 남아 섞이지 않게.
       //   generateSearch(약 60초) 동안 비우기가 끝나 있으므로, 주입 시점엔 깨끗한 에디터.
       if(!window._autoMode){ try{ var _npc=byId('newpost-search'); if(_npc) _npc.click(); }catch(e){} }
-      var res=await window.api.generateSearch(topic, keyword, _extra, _style, _memo, _paid, _commerce, _source, _persona, undefined, _review||undefined);
+      var res=await window.api.generateSearch(topic, keyword, _extra, _style, _memo, _paid, _commerce, _source, _persona, undefined, _review||undefined, { auto: !!window._autoMode });
       if(!res||!res.ok) throw new Error((res&&res.error)||'생성 실패');
+      if(res.status==='hold' && !res.post){
+        var _holdReason=(res.holdReasons||[]).join(' / ')||'근거 확인이 필요해요';
+        window._genResult='hold:'+_holdReason;
+        if(st){ st.className='status on'; st.textContent='발행 보류 — '+_holdReason; renderGenWarnings(res, st); }
+        return;
+      }
+      if(res.status==='hold' && res.post && window._autoMode){
+        var _holdReason2=(res.holdReasons||[]).join(' / ')||'검수가 필요해요';
+        window._genResult='hold:'+_holdReason2;
+        if(st){ st.className='status on'; st.textContent='발행 보류 — '+_holdReason2; renderGenWarnings(res, st); }
+        return;
+      }
       window._genResult=null;
       // ★이미지 필터 유형 — 검색용도 반드시 설정(안 하면 이전 홈판값이 남아 그래픽이 통과함). 엔터형(영화·방송·드라마·공연)=포스터·스틸 허용(celebrity), 그 외=실사만.
       window._genType = (_fam==='A') ? 'celebrity' : 'search';
@@ -1126,8 +1243,10 @@
       // ★링크형: 원문 이미지 + 정부 사이트 여부(gov면 인포그래픽도 허용).
       var _linkIsGov = /(^|\.)(go\.kr|korea\.kr|gov\.kr)(\/|$|:)|\.go\.kr|korea\.kr/i.test((_source&&_source.url)||'');
       await finishGen(res.post, keyword||(res.post&&res.post.title)||'', _cmLinks, null, { search:true, sourceUrl:(_source&&_source.url)||'', sourceSite:(_source&&_source.siteName)||'', linkImages:(_source&&_source.images)||[], linkIsGov:_linkIsGov });
-      window._genResult='ok'; // ★예약 자동 실행(autoRun)이 완료를 감지하는 신호 — 검색용도 홈판처럼 세팅(없어서 자동실행이 타임아웃되던 버그).
-      if(st){ st.className='status on'; st.innerHTML='완료! <b>'+esc((res.post&&res.post.title)||'')+'</b> — 검색용 글 작성됨'; renderGenWarnings(res, st); }
+      var _genStatus=res.status||'ready';
+      var _genDoneText=_genStatus==='hold'?'발행 보류 — 사유 확인':(_genStatus==='review'?'검수 후 발행하세요':'검색용 글 작성됨');
+      window._genResult=_genStatus==='hold'?'hold:'+((res.holdReasons||[]).join(' / ')||'발행 보류'): 'ok'; // 예약 실행이 생성 상태를 감지한다.
+      if(st){ st.className='status on'; st.innerHTML='완료! <b>'+esc((res.post&&res.post.title)||'')+'</b> — '+_genDoneText; renderGenWarnings(res, st); }
     }catch(e){ _recordTokenLimit(e&&e.message); try{ if(typeof genError==='function') genError(e.message); }catch(_){} if(st) st.textContent='오류: '+e.message; window._genResult='err:'+(e&&e.message||e); }
     finally{ btn.disabled=false; }
   });
@@ -2124,7 +2243,19 @@
       var old=document.getElementById('gen-warn'); if(old) old.remove();
       var fc=res&&res.factCheck, hs=res&&res.scrapeHealth;
       var parts=[];
-      if(hs && hs.ok===false && hs.message){
+      if(res && res.status){
+        var badge=res.status==='ready'?'✅ 발행 준비':(res.status==='hold'?'⛔ 발행 보류':'🔍 검수 필요');
+        var intent=(res.brief&&res.brief.intentLabel)||'검색 의도 미분류';
+        parts.push('<div><b>'+badge+'</b> · 의도: '+esc(intent)+'</div>');
+        var addReasons=function(label,items){ if(Array.isArray(items)&&items.length) parts.push('<div style="margin-top:4px"><b>'+label+'</b><ul style="margin:2px 0 0;padding-left:18px">'+items.map(function(item){return '<li>'+esc(item)+'</li>';}).join('')+'</ul></div>'); };
+        addReasons('보류 사유',res.holdReasons);
+        addReasons('검수 항목',res.reviewReasons);
+        var missing=res.contentCheck&&Array.isArray(res.contentCheck.missing)?res.contentCheck.missing:[];
+        if(missing.length) parts.push('<div style="margin-top:4px"><b>필수 답변 누락</b><ul style="margin:2px 0 0;padding-left:18px">'+missing.map(function(item){return '<li>'+esc(item.label||item.id)+'</li>';}).join('')+'</ul></div>');
+      }
+      if(hs && hs.blocked){
+        parts.push('<div style="margin-bottom:6px;color:#a52626">🚫 <b>네이버 검색 제한</b> — '+esc(hs.message||'네이버 검색이 이 네트워크에서 일시 제한됐어요.')+'</div>');
+      }else if(hs && hs.ok===false && hs.message){
         parts.push('<div style="margin-bottom:6px">🛠️ <b>자료 수집 문제</b> — '+esc(hs.message)+'</div>');
       }
       if(fc && fc.ran && fc.issues && fc.issues.length){
@@ -2145,6 +2276,116 @@
     }catch(e){}
   }
 
+  // 검색 성과 추적은 패널을 열거나 사용자가 버튼을 눌렀을 때만 조회한다.
+  (function initSearchPerformancePanel(){
+    var panel=byId('perf-panel'); if(!panel) return;
+    var blogInput=byId('perf-blog-id'), syncBtn=byId('perf-sync'), checkBtn=byId('perf-check');
+    var entriesBox=byId('perf-entries'), summaryBox=byId('perf-summary'), blockedBox=byId('perf-blocked'), statusBox=byId('perf-status');
+    var latest=null;
+    var pe=function(value){ return esc(String(value==null?'':value)).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
+    var say=function(message,isError){ if(statusBox){ statusBox.textContent=message||''; statusBox.style.color=isError?'#bd3434':'#687386'; } };
+    try{ blogInput.value=localStorage.getItem('perfBlogId')||''; }catch(e){}
+    function blogIdValue(){
+      var value=(blogInput&&blogInput.value||'').trim(); if(value) return value;
+      try{
+        var nv=byId('nvweb'); var url=(nv&&nv.getURL?nv.getURL():'')||(nv&&nv.getAttribute('src'))||'';
+        var match=url.match(/blog\.naver\.com\/([^\/?#]+)/i);
+        if(match&&match[1]&&!/GoBlogWrite|PostWrite/i.test(match[1])) return match[1];
+      }catch(e){}
+      return '';
+    }
+    function dateLabel(value){
+      if(value==null||value==='') return '-';
+      var raw=String(value); var date=(typeof value==='number'||/^\d{13}$/.test(raw))?new Date(Number(value)):new Date(value);
+      return Number.isNaN(date.getTime())?'-':date.toLocaleDateString();
+    }
+    function rankLabel(check){
+      if(!check||!check.blogTabObserved) return '-';
+      return check.blogTabRank==null?'30위 밖':String(check.blogTabRank)+'위';
+    }
+    function summaryTable(title,groups){
+      var rows=Object.keys(groups||{}).sort().map(function(key){
+        var s=groups[key]||{};
+        return '<tr><td style="padding:5px;border-top:1px solid #edf0f5">'+pe(key)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.tracked||0)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.linked||0)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.checked||0)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.top10||0)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+(s.medianBestRank==null?'-':pe(s.medianBestRank))+'</td></tr>';
+      }).join('');
+      return '<div style="min-width:330px;flex:1"><b style="font-size:11px">'+pe(title)+'</b><table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-top:4px"><thead><tr><th style="text-align:left">구분</th><th>추적</th><th>연결</th><th>확인</th><th>10위 안</th><th>최고 순위 중앙값</th></tr></thead><tbody>'
+        +(rows||'<tr><td colspan="6" style="padding:5px;color:#8b95a5">기록 없음</td></tr>')+'</tbody></table></div>';
+    }
+    function render(data){
+      latest=data||{};
+      var block=latest.blockState||{};
+      if(blockedBox){ blockedBox.style.display=block.blocked?'block':'none'; blockedBox.textContent=block.blocked?(block.message||'네이버 검색이 일시 제한됐어요.'):''; }
+      if(checkBtn){ checkBtn.disabled=!!block.blocked; checkBtn.textContent='순위 확인 (대상 '+Number(latest.due||0)+'개)'; checkBtn.style.opacity=block.blocked?'.55':'1'; }
+      var entries=Array.isArray(latest.entries)?latest.entries:[];
+      if(entriesBox){
+        entriesBox.innerHTML=entries.length?entries.map(function(entry){
+          var checks=Array.isArray(entry.checks)?entry.checks.slice():[];
+          var newest=checks.slice().sort(function(a,b){return (Date.parse(b.at)||0)-(Date.parse(a.at)||0);})[0];
+          var history=checks.slice().sort(function(a,b){return Number(a.dueDay||0)-Number(b.dueDay||0);}).map(function(check){ return pe(check.dueDay)+'일 '+pe(rankLabel(check)); }).join(' · ')||'-';
+          var linked=!!entry.url;
+          return '<tr style="border-top:1px solid #edf0f5">'
+            +'<td style="padding:6px">'+pe(entry.keyword)+'</td><td style="text-align:center;padding:6px">'+pe(entry.intent)+'</td>'
+            +'<td style="text-align:center;padding:6px">'+pe(entry.statusAtGen)+'</td><td style="text-align:center;padding:6px">'+pe(dateLabel(entry.publishedAt))+'</td>'
+            +'<td style="text-align:center;padding:6px">'+pe(newest?rankLabel(newest):'-')+'</td><td style="padding:6px">'+history+'</td>'
+            +'<td style="padding:5px">'+(linked?'<span style="color:#438154">연결됨</span>':'<div style="display:flex;gap:4px"><input class="perf-url" data-id="'+pe(entry.id)+'" type="text" placeholder="https://blog.naver.com/ID/글번호" style="width:150px;padding:4px;font-size:10px"><button class="perf-row-link" data-id="'+pe(entry.id)+'" type="button" style="padding:4px 6px;font-size:10px">연결</button></div>')+'</td></tr>';
+        }).join(''):'<tr><td colspan="7" style="padding:10px;color:#8b95a5">아직 추적할 검색용 글이 없어요.</td></tr>';
+      }
+      if(summaryBox){
+        var summary=latest.summary||{};
+        summaryBox.innerHTML='<div style="display:flex;gap:16px;flex-wrap:wrap">'+summaryTable('의도별',summary.byIntent||{})+summaryTable('생성 상태별',summary.byStatus||{})+'</div>';
+      }
+    }
+    async function load(){
+      try{
+        if(!window.api||!window.api.perfList) throw new Error('성과 추적 기능을 불러오지 못했습니다.');
+        var result=await window.api.perfList();
+        if(!result||!result.ok) throw new Error((result&&result.error)||'성과 기록을 불러오지 못했습니다.');
+        render(result);
+      }catch(error){ say(error.message,true); }
+    }
+    panel.addEventListener('toggle',function(){ if(panel.open) load(); });
+    if(blogInput) blogInput.addEventListener('change',function(){ try{ localStorage.setItem('perfBlogId',blogInput.value.trim()); }catch(e){} });
+    if(syncBtn) syncBtn.addEventListener('click',async function(){
+      var blogId=blogIdValue(); if(!blogId){ say('블로그 ID를 입력하거나 블로그 에디터를 열어 주세요.',true); return; }
+      if(blogInput) blogInput.value=blogId;
+      try{ localStorage.setItem('perfBlogId',blogId); }catch(e){}
+      syncBtn.disabled=true;
+      try{
+        var result=await window.api.perfSync(blogId);
+        if(!result||!result.ok) throw new Error((result&&result.error)||'발행 글을 연결하지 못했습니다.');
+        say('발행 글 '+Number(result.linked||0)+'개를 연결했습니다.'); await load();
+      }catch(error){ say(error.message,true); }finally{ syncBtn.disabled=false; }
+    });
+    if(checkBtn) checkBtn.addEventListener('click',async function(){
+      if(checkBtn.disabled) return;
+      checkBtn.disabled=true;
+      try{
+        var before=await window.api.perfList();
+        if(before&&before.ok){ render(before); if(before.blockState&&before.blockState.blocked){ say(before.blockState.message||'네이버 검색이 일시 제한됐어요.',true); return; } }
+        var result=await window.api.perfCheck();
+        if(!result||!result.ok) throw new Error((result&&result.error)||'순위를 확인하지 못했습니다.');
+        say(result.stopped==='blocked'?'네이버 검색 제한으로 순위 확인을 중단했습니다.':'순위 확인 '+Number(result.checked||0)+'건을 마쳤습니다.',result.stopped==='blocked');
+        await load();
+      }catch(error){ say(error.message,true); }finally{ if(latest&&latest.blockState&&latest.blockState.blocked) checkBtn.disabled=true; else checkBtn.disabled=false; }
+    });
+    if(entriesBox) entriesBox.addEventListener('click',async function(event){
+      var button=event.target&&event.target.closest?event.target.closest('.perf-row-link'):null; if(!button) return;
+      var id=button.getAttribute('data-id'), input=entriesBox.querySelector('.perf-url[data-id="'+id.replace(/["\\]/g,'\\$&')+'"]');
+      var url=input?(input.value||'').trim():''; if(!url){ say('발행 글 주소를 입력해 주세요.',true); return; }
+      button.disabled=true;
+      try{
+        var result=await window.api.perfLink(id,url);
+        if(!result||!result.ok) throw new Error((result&&result.error)||'발행 글을 연결하지 못했습니다.');
+        say('발행 글을 연결했습니다.'); await load();
+      }catch(error){ say(error.message,true); }finally{ button.disabled=false; }
+    });
+  })();
+
   // 생성된 글을 왼쪽 편집기에 렌더
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function renderPost(post){
@@ -2162,7 +2403,7 @@
 
 
   // ★스마트에디터 자동 로드 (앱 들어오면 바로 네이버 글쓰기)
-  (function(){ var w=byId('nvweb'); if(!w.getAttribute('src')) w.setAttribute('src','https://blog.naver.com/GoBlogWrite.naver'); })();
+  (function(){ var w=byId('nvweb'); if(!keywordToolOnly && !w.getAttribute('src')) w.setAttribute('src','https://blog.naver.com/GoBlogWrite.naver'); })();
 
   // ★"처음 화면(뒤로 가기)" 버튼 — 두 번 눌러야 이동(1번=저장 알림 / 2번=로그인 화면으로).
   //   목적: 네이버 아이디를 바꾸고 싶을 때 앱을 끄지 않고 처음 화면으로. (클로드 로그인은 유지)
@@ -4390,6 +4631,10 @@
       // ── 공통: 생성 대기 → "임시저장 완료" 확인 → 새 글 쓰기 ── (★연예/인물 글은 이미지 수집·비전·썸네일삽입이 무거워 7분 초과 → 15분으로 늘림. 생성이 끝나면 즉시 통과하므로 손해 없음. 이 안에 끝나면 자동모드가 안 꺼진 채 저장·썸네일삽입까지 진행됨.)
       var done=await waitGen(900000);
       if(!done || (''+(window._genResult||'')).indexOf('err')===0){ return finishAuto('생성 실패/타임아웃: '+(window._genResult||'timeout')); }
+      if(kind==='search' && (''+(window._genResult||'')).indexOf('hold:')===0){
+        if((''+window._genResult).indexOf('네이버 검색 제한')>=0) return finishAuto('네이버 검색 제한 — 이번 예약 실행 중단');
+        return finishAuto('발행 보류: '+(''+window._genResult).slice(5));
+      }
       await _sleepA(1500);
       // ★주입 검증 — ★★"본문이 통째로 없을 때만" 전체 재주입한다. (마커 1개 남았다고 재주입하면 멀쩡한 글을 지우고 다시 넣다가 오히려 깨질 수 있음 → 그건 재주입 말고 "마커 청소만".)
       if(window._lastInject && !(await _editorBodyOk())){
@@ -4469,5 +4714,134 @@
   @keyframes gsp{to{transform:rotate(360deg)}}
   @keyframes kwbar{0%{margin-left:-40%}100%{margin-left:100%}}
 </style>
+<script>
+(function(){
+  var page=document.getElementById('keyword-report-page');
+  var openButton=document.getElementById('keyword-report-open');
+  var closeButton=document.getElementById('keyword-report-close');
+  var seedInput=document.getElementById('keyword-report-seed');
+  var countInput=document.getElementById('keyword-report-count');
+  var excludeInput=document.getElementById('keyword-report-exclude');
+  var prepareButton=document.getElementById('keyword-report-prepare');
+  var exportButton=document.getElementById('keyword-report-export');
+  var statusBox=document.getElementById('keyword-report-status');
+  var metaBox=document.getElementById('keyword-report-meta');
+  var summaryBox=document.getElementById('keyword-report-summary');
+  var rowsBox=document.getElementById('keyword-report-rows');
+  var formInputs=[seedInput,countInput,excludeInput];
+  if(!page||!prepareButton) return;
+  var directEntry=new URLSearchParams(window.location.search).get('mode')==='keywords';
+  var currentReport=null;
+  if(directEntry) document.body.classList.add('keyword-tool-only','keyword-tool-open');
+
+  function requestFromForm(){
+    return {
+      seed:(seedInput.value||'').replace(/\s+/g,' ').trim(),
+      count:Number(countInput.value),
+      excludeTerms:(excludeInput.value||'').split(/[,，\n]/).map(function(term){return term.replace(/\s+/g,' ').trim();}).filter(function(term,index,all){return !!term&&all.indexOf(term)===index;}),
+    };
+  }
+  function requestMatches(){
+    if(!currentReport||!currentReport.meta) return false;
+    var request=requestFromForm(), saved=currentReport.meta;
+    return request.seed===saved.seed&&request.count===saved.requestedCount
+      &&request.excludeTerms.join('\n')===(saved.excludeTerms||[]).join('\n');
+  }
+  function setStatus(message,isError){
+    statusBox.textContent=message||'';
+    statusBox.classList.toggle('on',!!message);
+    statusBox.classList.toggle('error',!!isError);
+  }
+  function showKeywordTool(){
+    document.body.classList.add('keyword-tool-open');
+    if(!directEntry) setTimeout(function(){seedInput.focus();},0);
+  }
+  function hideKeywordTool(){
+    if(directEntry){window.location.href='login.html';return;}
+    document.body.classList.remove('keyword-tool-open');
+  }
+  if(openButton) openButton.addEventListener('click',showKeywordTool);
+  if(closeButton){
+    closeButton.textContent=directEntry?'로그인 화면으로':'일반 화면으로';
+    closeButton.addEventListener('click',hideKeywordTool);
+  }
+  function updateSaveState(){
+    var matches=requestMatches();
+    exportButton.disabled=!matches;
+    if(currentReport&&!matches) setStatus('조사 조건이 바뀌었습니다. 조건을 되돌리거나 다시 조사해 주세요.',false);
+    else if(currentReport&&matches) setStatus('미리보기가 준비됐습니다. 내용을 확인한 뒤 엑셀로 저장할 수 있습니다.',false);
+  }
+  formInputs.forEach(function(input){input.addEventListener('input',updateSaveState);input.addEventListener('change',updateSaveState);});
+
+  function displayMetric(value){
+    if(typeof value==='number'&&Number.isFinite(value)) return new Intl.NumberFormat('ko-KR').format(value);
+    if(typeof value==='string'&&/^<\s*10$/.test(value.trim())) return '<10';
+    return '—';
+  }
+  function displaySource(sources){
+    var labels={'search-ads-xlsx':'검색광고 XLSX','naver-autocomplete':'네이버 자동완성'};
+    return (Array.isArray(sources)?sources:[]).map(function(source){return labels[source]||String(source||'');}).filter(Boolean).join(' · ')||'—';
+  }
+  function formatImportedAt(value){
+    var date=new Date(value||'');
+    if(!Number.isFinite(date.getTime())) return '기록 없음';
+    return new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
+  }
+  function renderRows(rows){
+    rowsBox.replaceChildren();
+    (Array.isArray(rows)?rows:[]).forEach(function(item){
+      var tr=document.createElement('tr');
+      var values=[
+        [item.keyword,false],[displayMetric(item.monthlyPc),true],[displayMetric(item.monthlyMobile),true],
+        [displayMetric(item.monthlyTotal),true],[item.category||'관련 키워드',false],
+        [Array.isArray(item.intents)&&item.intents.length?item.intents.join(', '):'일반 탐색',false],[displaySource(item.sources),false],
+      ];
+      values.forEach(function(value){var td=document.createElement('td');td.textContent=String(value[0]==null?'':value[0]);if(value[1])td.className='num';tr.appendChild(td);});
+      rowsBox.appendChild(tr);
+    });
+    if(!rowsBox.children.length){
+      var empty=document.createElement('tr'),cell=document.createElement('td');
+      cell.className='kw-empty';cell.colSpan=7;cell.textContent='조건에 맞는 키워드가 없습니다.';empty.appendChild(cell);rowsBox.appendChild(empty);
+    }
+  }
+  prepareButton.addEventListener('click',async function(){
+    var request=requestFromForm();
+    if(!request.seed||request.seed.length>80){setStatus('씨앗 키워드를 1~80자로 입력해 주세요.',true);seedInput.focus();return;}
+    if(!window.api||typeof window.api.keywordReportPrepare!=='function'){setStatus('키워드 조사 기능을 불러오지 못했습니다. 앱을 다시 열어 주세요.',true);return;}
+    prepareButton.disabled=true;prepareButton.textContent='파일을 읽고 후보를 모으는 중…';
+    exportButton.disabled=true;formInputs.forEach(function(input){input.disabled=true;});
+    setStatus('공식 검색광고 XLSX를 고른 뒤 자동완성 후보를 함께 모읍니다.');
+    try{
+      var result=await window.api.keywordReportPrepare(request);
+      if(result&&result.cancelled){setStatus('파일 선택을 취소했습니다. 기존 미리보기는 그대로 남아 있습니다.');return;}
+      if(!result||!result.ok){setStatus((result&&result.error)||'키워드 보고서를 준비하지 못했습니다.',true);return;}
+      currentReport={rows:result.rows||[],meta:result.meta||{}};
+      renderRows(currentReport.rows);
+      var meta=currentReport.meta;
+      summaryBox.textContent='선정 '+currentReport.rows.length+'/'+meta.requestedCount+' · 후보 '+meta.availableCount+' · 부족 '+meta.shortfall;
+      var metaParts=['파일: '+(meta.sourceFileName||'—'),'가져온 날짜(한국 시간): '+formatImportedAt(meta.importedAt),'검색광고 행: '+(meta.importedCount||0),'자동완성 후보: '+(meta.autocompleteCount||0)];
+      metaBox.textContent=metaParts.join(' · ');
+      exportButton.disabled=!requestMatches();
+      var warning=meta.autocompleteWarning?('자동완성 안내: '+meta.autocompleteWarning+' '):'';
+      var shortage=meta.shortfall?' 후보가 부족해 '+meta.shortfall+'개를 채우지 않았습니다.':'';
+      setStatus(warning+'미리보기가 준비됐습니다.'+shortage,false);
+    }catch(error){setStatus(error&&error.message?error.message:'키워드 보고서를 준비하지 못했습니다.',true);}
+    finally{prepareButton.disabled=false;prepareButton.textContent='검색광고 XLSX 선택 후 후보 만들기';formInputs.forEach(function(input){input.disabled=false;});exportButton.disabled=!requestMatches();}
+  });
+  exportButton.addEventListener('click',async function(){
+    if(!requestMatches()){updateSaveState();return;}
+    if(!window.api||typeof window.api.keywordReportExport!=='function'){setStatus('엑셀 저장 기능을 불러오지 못했습니다.',true);return;}
+    exportButton.disabled=true;exportButton.textContent='저장 중…';
+    prepareButton.disabled=true;formInputs.forEach(function(input){input.disabled=true;});
+    try{
+      var result=await window.api.keywordReportExport(requestFromForm());
+      if(result&&result.cancelled){setStatus('저장을 취소했습니다. 미리보기는 그대로 남아 있습니다.');return;}
+      if(!result||!result.ok){setStatus((result&&result.error)||'엑셀 파일을 저장하지 못했습니다.',true);return;}
+      setStatus('엑셀 파일을 저장했습니다: '+result.filePath,false);
+    }catch(error){setStatus(error&&error.message?error.message:'엑셀 파일을 저장하지 못했습니다.',true);}
+    finally{exportButton.textContent='엑셀로 저장';exportButton.disabled=!requestMatches();prepareButton.disabled=false;formInputs.forEach(function(input){input.disabled=false;});}
+  });
+})();
+</script>
 </body>
 </html>

@@ -8,6 +8,7 @@
 //   - src/keyword/trends.js  : 각 수집 함수가 record() 호출
 //   - electron/main.js       : 생성 결과에 report()를 실어 렌더러가 경고 표시
 //   - scripts/doctor.js      : 실제로 한 번 수집해보고 어디가 깨졌는지 출력
+const { getBlockState } = require('./naverSearchGuard');
 
 // 소스 id → 사람이 읽는 이름 + 깨졌을 때 볼 곳.
 const SOURCES = {
@@ -16,6 +17,7 @@ const SOURCES = {
   'blog-facts': { label: '블로그 검색(참고)', fix: 'markup.js SDS_TEXT_CLASS / searchUrl.blog' },
   'place-reviews': { label: '장소·제품 후기', fix: 'markup.js SDS_TEXT_CLASS / searchUrl.blog' },
   'top-titles': { label: '상위 제목 참고', fix: 'markup.js SDS_TEXT_CLASS / searchUrl.blog' },
+  serp: { label: '통합검색 결과 관찰', fix: 'markup.js parseSerpSections / searchUrl.integrated' },
   'autocomplete': { label: '네이버 자동완성', fix: 'src/keyword/expand.js' },
   'realtime-trends': { label: '실시간 트렌드(통합)', fix: 'src/keyword/trends.js 각 소스' },
   'ent-ranking': { label: '연예 랭킹', fix: 'markup.js ENT_EXTRACT' },
@@ -42,6 +44,7 @@ function record(source, count, meta = {}) {
       count: n,
       at: Date.now(),
       query: meta.query || '',
+      blocked: meta.blocked === true,
       zeroStreak: n === 0 ? (prev.zeroStreak || 0) + 1 : 0,
     });
   } catch (e) { /* 진단이 본 작업을 막지 않는다 */ }
@@ -62,8 +65,8 @@ function snapshot() {
 function broken(minStreak = 1) {
   const out = [];
   for (const [k, v] of state) {
-    if ((v.zeroStreak || 0) >= minStreak) {
-      out.push({ source: k, label: (SOURCES[k] || {}).label || k, fix: (SOURCES[k] || {}).fix || '', zeroStreak: v.zeroStreak, query: v.query });
+    if ((v.zeroStreak || 0) >= minStreak || v.blocked) {
+      out.push({ source: k, label: (SOURCES[k] || {}).label || k, fix: (SOURCES[k] || {}).fix || '', zeroStreak: v.zeroStreak, query: v.query, blocked: !!v.blocked });
     }
   }
   return out;
@@ -75,6 +78,10 @@ function broken(minStreak = 1) {
  */
 function report() {
   const b = broken(1);
+  const blocked = [...state.values()].some((value) => value.blocked);
+  if (blocked) {
+    return { ok: false, blocked: true, broken: b, message: getBlockState().message };
+  }
   if (!b.length) return { ok: true, broken: [], message: '' };
   const names = b.map((x) => x.label).join(', ');
   return {

@@ -8,7 +8,7 @@
 // 생성은 홈판과 동일하게 runClaude()가 사용자의 클로드 구독 로그인으로 처리(배포자 비용 0원).
 
 const { runClaude } = require('./runClaude');
-const { getSearchTopic, SEARCH_MIN_LENGTH } = require('./searchTopics');
+const { getSearchTopic } = require('./searchTopics');
 const { MAX_QUOTES } = require('./postTypes');
 const { parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectTravelPlaceInfo, gatherKeywordContext } = require('./generatePost');
 const { fetchPlaceInfo } = require('../place/placeLookup');
@@ -19,8 +19,12 @@ const {
 } = require('./buildSearchPrompt');
 const { fetchAutocomplete } = require('../keyword/expand');
 const { fetchNewsArticles, fetchBlogFacts, fetchPlaceReviews, fetchNearbyAttractions } = require('../keyword/trends');
+const { observeSerp } = require('../keyword/serpObserve');
 const scrapeHealth = require('../scrape/health');
+const { isSearchBlocked } = require('../scrape/naverSearchGuard');
 const { factCheckPost } = require('./factCheck');
+const { buildSearchBrief } = require('./searchBrief');
+const { checkRequiredAnswers, detectExperienceClaims } = require('./searchContentCheck');
 
 // ★네이버 지도 검색어 = "지역 상호명"으로만(사용자 확정 2026-08-26). 프랜차이즈 지점 구분은 사용자가 가게 이름에 지점까지 적어줌(UI 안내).
 //   플레이스 조회로 얻은 공식 이름(지점명 포함) 앞에 지역(시/군)만 붙인다. 지역 못 뽑으면 상호명만.
@@ -55,7 +59,7 @@ async function extractMainKeyword(title, text, model) {
   return String(out || '').trim().split('\n')[0].replace(/^["'\s]+|["'\s]+$/g, '').slice(0, 30);
 }
 
-async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3 } = {}) {
+async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false } = {}) {
   const searchTopic = getSearchTopic(topic); // 잘못된 주제면 여기서 예외
   scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   const system = buildSearchSystemPrompt(topic);
@@ -66,10 +70,14 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     try { kw = await extractMainKeyword(source.title, source.text, model); } catch (e) { kw = ''; }
   }
 
-  // ★검색용 제목의 핵심 — 키워드를 네이버 자동완성에 넣어 "실제로 함께 검색되는 세부 키워드"를 가져온다.
-  //   이 세부 키워드를 제목에 반드시 넣어야 검색 노출·인텐트 정합(메인 단독 발행 금지).
+  // 같은 검색 목적의 자동완성 후보를 모아 기획 단계에서 걸러 사용한다.
   let autocomplete = [];
   if (kw) { try { autocomplete = (await fetchAutocomplete(kw)) || []; } catch (e) { autocomplete = []; } }
+
+  let serp = null;
+  if (kw && !review && !source) {
+    try { serp = await observeSerp(kw); } catch (e) { serp = { measured: false, blocked: false, reason: e.message }; }
+  }
 
   // ★★검색 의도 파악의 핵심 = 배경 조사(홈판과 동일). "왜 이 키워드를 검색하는지"(예: 하영=증조부 친일 논란·노윤서와 그림 비교)를
   //   최신 뉴스 + 인물이면 나무위키로 가져와, 프롬프트가 실제 맥락을 알고 쓰게 한다. (엔터형=인물 배경조사)
@@ -138,9 +146,32 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     } catch (e) { /* 실패해도 글은 나온다 */ }
   }
 
-  let best = null;
+  const searchBlocked = isSearchBlocked();
+  if (searchBlocked) scrapeHealth.record('serp', 0, { query: kw, blocked: true });
+  const brief = buildSearchBrief({
+    keyword: kw, topic, review, source, memo, paid, style, autocomplete,
+    newsArticles, keywordFacts, officialFacts, placeReviews,
+    searchBlocked, serp,
+  });
+  if (strictEvidence && brief.preHoldReasons.length) {
+    return {
+      post: null,
+      status: 'hold',
+      holdReasons: brief.preHoldReasons,
+      reviewReasons: [],
+      brief,
+      contentCheck: { ran: false, items: [], missing: [], reason: '근거 사전 확인에서 보류' },
+      validation: null,
+      attempts: 0,
+      factCheck: null,
+      scrapeHealth: scrapeHealth.report(),
+    };
+  }
 
-  // ★마무리 — 팩트 대조 + 수집 진단을 결과에 실어 보낸다(경고이지 차단이 아니다).
+  let best = null;
+  const candidates = [];
+
+  // 팩트 대조와 수집 진단을 결과에 실어 최종 상태를 계산한다.
   const _finish = async (cand) => {
     if (!cand) return cand;
     try {
@@ -150,6 +181,16 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       });
     } catch (e) { cand.factCheck = { ran: false, issues: [], highCount: 0, reason: e.message }; }
     try { cand.scrapeHealth = scrapeHealth.report(); } catch (e) {}
+    const status = computeSearchStatus({
+      brief,
+      validation: cand.validation,
+      contentCheck: cand.contentCheck,
+      factCheck: cand.factCheck,
+    });
+    cand.status = status.status;
+    cand.holdReasons = status.holdReasons;
+    cand.reviewReasons = status.reviewReasons;
+    cand.brief = brief;
     return cand;
   };
 
@@ -157,13 +198,13 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     const retry =
       best && !best.validation.ok
         ? {
-            issues: best.validation.issues,
-            prevLength: best.validation.bodyLength,
-            min: SEARCH_MIN_LENGTH,
+            severe: best.validation.severe,
+            missing: best.contentCheck && best.contentCheck.missing || [],
+            min: brief.minChars,
           }
         : null;
 
-    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions });
+    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, brief });
     const { text, meta } = await runClaude({ system, user, model });
     // ★JSON 파싱 실패도 재시도 대상 — 마지막 시도가 아니면 다시 생성.
     let post;
@@ -336,14 +377,25 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       }
       post.blocks = appendCtaBlock(post.blocks, cta);
     }
-    const validation = validateSearchPost(post, searchTopic);
-
-    const candidate = { post, validation, meta, attempts: attempt };
-    if (validation.ok) return await _finish(candidate);
-
-    if (!best || validation.bodyLength > best.validation.bodyLength) {
-      best = candidate;
+    const validation = validateSearchPost(post, searchTopic, brief, {
+      keyword: kw,
+      experienceInput: brief.evidence.experienceInput,
+    });
+    let contentCheck = { ran: false, items: [], missing: [], reason: '형식 검사에서 심각한 문제가 있어 생략' };
+    if (!validation.severe.length) {
+      contentCheck = await checkRequiredAnswers({ post, brief });
+      if (contentCheck.missing.length) {
+        const labels = contentCheck.missing.map((item) => item.label).join(', ');
+        validation.severe.push(`필수 답변 누락: ${labels}`);
+        validation.issues = validation.severe.concat(validation.warnings);
+        validation.ok = false;
+      }
     }
+
+    const candidate = { post, validation, contentCheck, meta, attempts: attempt };
+    candidates.push(candidate);
+    best = pickBestCandidate(candidates);
+    if (!validation.severe.length && !contentCheck.missing.length) return await _finish(candidate);
     best.attempts = attempt;
   }
 
@@ -370,38 +422,73 @@ function blockTextLength(b) {
 }
 
 /**
- * 검색용 하드 규칙 검증. (자극 단어 검증 없음)
+ * 검색용 원고의 구조·분량·직접 경험 표현을 검사한다.
  */
-function validateSearchPost(post, searchTopic) {
+function validateSearchPost(post, searchTopic, brief, ctx = {}) {
   const issues = [];
-  const blocks = post.blocks || [];
+  const severe = [];
+  const warnings = [];
+  const blocks = Array.isArray(post && post.blocks) ? post.blocks : [];
+  const minChars = Number(brief && brief.minChars) || 1000;
+  const minHeadings = Number(brief && brief.minHeadings) || 3;
+  const targetMax = Number(brief && Array.isArray(brief.targetChars) && brief.targetChars[1]) || 2200;
+  const keyword = String(ctx.keyword || '').trim();
 
-  const quoteCount = blocks.filter((b) => b.kind === 'quote').length;
-  if (quoteCount > MAX_QUOTES) {
-    issues.push(`인용구 ${quoteCount}개 — 최대 ${MAX_QUOTES}개 초과.`);
+  const quoteCount = blocks.filter((b) => b && b.kind === 'quote').length;
+  if (quoteCount > MAX_QUOTES) severe.push(`인용구 ${quoteCount}개 — 최대 ${MAX_QUOTES}개 초과.`);
+
+  const headingCount = blocks.filter((b) => b && b.kind === 'heading').length;
+  if (headingCount < minHeadings) severe.push(`소제목 ${headingCount}개 — 최소 ${minHeadings}개 미달.`);
+
+  const bodyLen = blocks.reduce((sum, block) => sum + blockTextLength(block), 0);
+  if (bodyLen < minChars) severe.push(`본문 ${bodyLen}자 — 최소 ${minChars}자 미달.`);
+  if (bodyLen > targetMax * 1.6) warnings.push('불필요하게 긴 원고일 수 있음');
+
+  const lastBlock = blocks[blocks.length - 1];
+  if (lastBlock && lastBlock.kind === 'heading') severe.push('마지막 블록이 소제목 — 미완성/잘림 의심.');
+  if (blocks.some((block) => block && block.kind === 'text' && !String(block.text || '').trim())) {
+    severe.push('빈 본문(text) 블록 있음 — 미완성/잘림 의심.');
+  }
+  let bareHeadings = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    if (!blocks[i] || blocks[i].kind !== 'heading') continue;
+    let hasText = false;
+    for (let j = i + 1; j < blocks.length && blocks[j] && blocks[j].kind !== 'heading'; j++) {
+      if (blocks[j].kind === 'text' && String(blocks[j].text || '').trim().length >= 15) {
+        hasText = true;
+        break;
+      }
+    }
+    if (!hasText) bareHeadings++;
+  }
+  if (bareHeadings) severe.push(`내용 없는 빈 소제목 ${bareHeadings}개 — 소제목만 있고 문단이 없음.`);
+
+  if (!String(post && post.description || '').trim()) {
+    severe.push('디스크립션(description)이 비어 있음.');
   }
 
-  // ★소제목(heading=버티컬라인) 최소 4개 — 홈판과 동일하게 검색용도 강제(4개 미만이면 재생성).
-  const headingCount = blocks.filter((b) => b.kind === 'heading').length;
-  if (headingCount < 4) {
-    issues.push(`소제목 ${headingCount}개 — 최소 4개 미만(섹션 부족).`);
+  if (keyword) {
+    const titleNormalized = String(post && post.title || '').replace(/\s+/g, '').toLocaleLowerCase();
+    const keywordNormalized = keyword.replace(/\s+/g, '').toLocaleLowerCase();
+    const allKeywordPartsPresent = keyword.split(/\s+/).filter(Boolean)
+      .every((part) => titleNormalized.includes(part.replace(/\s+/g, '').toLocaleLowerCase()));
+    if (!titleNormalized.includes(keywordNormalized) && !allKeywordPartsPresent) {
+      severe.push(`제목에 메인 키워드 "${keyword}"가 없음.`);
+    }
   }
 
-  const bodyLen = blocks.reduce((sum, b) => sum + blockTextLength(b), 0);
-  if (bodyLen < SEARCH_MIN_LENGTH) {
-    issues.push(`본문 ${bodyLen}자 — 최소 ${SEARCH_MIN_LENGTH}자 미달(너무 짧음).`);
+  if (ctx.experienceInput === false) {
+    const claims = detectExperienceClaims(post);
+    if (claims.length) severe.push(`직접 경험 근거 없는 1인칭 경험 표현 ${claims.length}건`);
   }
 
-  // description(검색 스니펫)은 검색용에서 필수.
-  if (!post.description || !post.description.trim()) {
-    issues.push('디스크립션(description)이 비어 있음 — 검색 스니펫용 필수.');
-  }
-
-  const count = (k) => blocks.filter((b) => b.kind === k).length;
-
+  const count = (kind) => blocks.filter((block) => block && block.kind === kind).length;
+  issues.push(...severe, ...warnings);
   return {
-    ok: issues.length === 0,
+    ok: severe.length === 0,
     issues,
+    severe,
+    warnings,
     quoteCount,
     headingCount,
     imageCount: count('image'),
@@ -409,11 +496,59 @@ function validateSearchPost(post, searchTopic) {
     mapCount: count('map'),
     qnaCount: count('qna'),
     bodyLength: bodyLen,
-    minLength: SEARCH_MIN_LENGTH,
-    topic: searchTopic.label,
-    // 주제별 필수 구성요소가 있으면, 코드로는 강제 못 하니 참고용으로 표시(프롬프트에서 지시).
-    hasMustInclude: !!searchTopic.mustInclude,
+    minLength: minChars,
+    intent: brief && brief.intent || 'general',
+    topic: searchTopic && searchTopic.label || '',
   };
 }
 
-module.exports = { generateSearchPost, validateSearchPost };
+function candidateScore(candidate) {
+  const validation = candidate && candidate.validation || {};
+  const contentCheck = candidate && candidate.contentCheck || {};
+  const severeCount = Array.isArray(validation.severe) ? validation.severe.length : 0;
+  const missingCount = Array.isArray(contentCheck.missing) ? contentCheck.missing.length : 0;
+  const warningCount = Array.isArray(validation.warnings) ? validation.warnings.length : 0;
+  return severeCount * 100 + missingCount * 10 + warningCount;
+}
+
+function pickBestCandidate(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  return candidates.reduce((best, candidate) => candidateScore(candidate) < candidateScore(best) ? candidate : best);
+}
+
+function computeSearchStatus({ brief, validation, contentCheck, factCheck } = {}) {
+  const holdReasons = [];
+  const reviewReasons = [];
+  const severe = Array.isArray(validation && validation.severe) ? validation.severe : [];
+  const warnings = Array.isArray(validation && validation.warnings) ? validation.warnings : [];
+  const missing = Array.isArray(contentCheck && contentCheck.missing) ? contentCheck.missing : [];
+
+  if (brief && Array.isArray(brief.preHoldReasons)) holdReasons.push(...brief.preHoldReasons);
+  if (severe.some((issue) => /직접 경험 근거 없는 1인칭 경험 표현/.test(issue))) {
+    holdReasons.push(severe.find((issue) => /직접 경험 근거 없는 1인칭 경험 표현/.test(issue)));
+  }
+  if (Number(factCheck && factCheck.highCount) >= 1) {
+    holdReasons.push(`중요 사실 근거 확인 필요 ${Number(factCheck.highCount)}건`);
+  }
+  reviewReasons.push(...severe);
+  if (missing.length) reviewReasons.push(`필수 답변 누락: ${missing.map((item) => item.label || item.id).join(', ')}`);
+  if (!contentCheck || contentCheck.ran === false) reviewReasons.push('필수 답변 내용 검사를 완료하지 못함');
+  if (!factCheck || factCheck.ran === false) reviewReasons.push('근거 대조를 완료하지 못함');
+  else if (Array.isArray(factCheck.issues) && factCheck.issues.length) reviewReasons.push(`사실 확인 항목 ${factCheck.issues.length}건 검토 필요`);
+  reviewReasons.push(...warnings);
+  if (brief && brief.ambiguous) reviewReasons.push('검색 의도가 불명확함');
+  if (brief && Array.isArray(brief.warnings)) reviewReasons.push(...brief.warnings);
+
+  const uniqueReviewReasons = [...new Set(reviewReasons)];
+  if (holdReasons.length) return { status: 'hold', holdReasons, reviewReasons: uniqueReviewReasons };
+  return uniqueReviewReasons.length
+    ? { status: 'review', holdReasons: [], reviewReasons: uniqueReviewReasons }
+    : { status: 'ready', holdReasons: [], reviewReasons: [] };
+}
+
+module.exports = {
+  generateSearchPost,
+  validateSearchPost,
+  pickBestCandidate,
+  computeSearchStatus,
+};

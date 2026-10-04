@@ -95,7 +95,56 @@ const ARTICLE_TITLE_RE = /<h2[^>]*id=["']title_area["'][^>]*>([\s\S]*?)<\/h2>/i;
 const searchUrl = {
   news: (q) => 'https://search.naver.com/search.naver?where=news&sort=1&query=' + encodeURIComponent(q),
   blog: (q) => 'https://search.naver.com/search.naver?where=blog&query=' + encodeURIComponent(q),
+  integrated: (q) => 'https://search.naver.com/search.naver?where=nexearch&query=' + encodeURIComponent(q),
 };
+
+const SERP_SECTION_RULES = [
+  { key: 'aiBriefing', pattern: /AI\s*브리핑/ },
+  { key: 'dictionary', pattern: /국어사전|어학사전|영어사전|지식백과|백과사전/ },
+  { key: 'ads', pattern: /관련 광고|파워링크/ },
+  { key: 'brandContent', pattern: /브랜드 콘텐츠/ },
+  { key: 'shopping', pattern: /가격비교|플러스 스토어|쇼핑/ },
+  { key: 'expertService', pattern: /상담|엑스퍼트/ },
+  { key: 'news', pattern: /뉴스/ },
+  { key: 'kin', pattern: /지식iN/ },
+  { key: 'popularPosts', pattern: /인기글/ },
+  { key: 'image', pattern: /^이미지$/ },
+  { key: 'video', pattern: /동영상|클립/ },
+];
+
+/** 통합검색 HTML에서 섹션 제목과 블로그 문서 참조만 관찰한다. */
+function parseSerpSections(html) {
+  const source = String(html || '');
+  const sections = [];
+  const seenSections = new Set();
+  const headingRe = /<h2\b[^>]*>([\s\S]*?)<\/h2>/gi;
+  let match;
+  while ((match = headingRe.exec(source)) && sections.length < 20) {
+    const heading = decodeText(match[1]);
+    if (!heading || /\s검색 결과$/.test(heading) || seenSections.has(heading)) continue;
+    seenSections.add(heading);
+    sections.push(heading);
+  }
+
+  const blogRefs = [];
+  const seenBlogs = new Set();
+  const blogRe = /https?:\/\/(?:m\.)?blog\.naver\.com\/([A-Za-z0-9_-]+)\/(\d{9,})(?=[/?#"'\s]|$)/gi;
+  while ((match = blogRe.exec(source)) && blogRefs.length < 30) {
+    const blogId = match[1];
+    const logNo = match[2];
+    const key = blogId + '/' + logNo;
+    if (seenBlogs.has(key)) continue;
+    seenBlogs.add(key);
+    blogRefs.push({ blogId, logNo, url: 'https://blog.naver.com/' + key });
+  }
+
+  return {
+    sections,
+    blogRefs,
+    placeLinks: /(?:pcmap\.)?place\.naver\.com|map\.naver\.com/i.test(source),
+    kinLinks: /kin\.naver\.com\/qna/i.test(source),
+  };
+}
 
 // ─────────────────────────────────────────────────────────────
 // B. 페이지 실행 스크립트 (Electron 숨은 창 executeJavaScript)
@@ -124,6 +173,7 @@ module.exports = {
   // A
   SDS_TEXT_CLASS, decodeText, grabSds, grabTitleSnippetPairs,
   ARTICLE_LINK_RE, grabArticleRefs, ARTICLE_BODY_RE, ARTICLE_TITLE_RE, searchUrl,
+  SERP_SECTION_RULES, parseSerpSections,
   // B
   OFFICIAL_IMG_EXTRACT, PEXELS_EXTRACT, NAVER_IMG_EXTRACT,
   ENT_URL, SPT_URL, ENT_EXTRACT, SPT_EXTRACT, DISCOVER_DUMP,

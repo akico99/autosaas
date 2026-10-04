@@ -127,4 +127,4 @@ async function factCheckPost({ post, facts, articles, background, placeReviews, 
   }
 }
 
-module.exports = { factCheckPost, blocksToText };
+module.exports = { factCheckPost, blocksToText, parseLoose };

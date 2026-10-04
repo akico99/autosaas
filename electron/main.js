@@ -43,6 +43,58 @@ const fs = require('fs');
 const M = require('../src/scrape/markup');
 // ★수집 자가진단 — "조용한 0건"(구조 변경)을 생성 결과에 실어 보낸다.
 const scrapeHealth = require('../src/scrape/health');
+const { createEntry, matchPublished, linkManually, dueChecks, findRank, addCheck, summarize } = require('../src/performance/tracker');
+const { guardedSearchFetch, runGuardedSearch, isSearchBlocked, getBlockState, NaverSearchBlockedError } = require('../src/scrape/naverSearchGuard');
+const { observeSerp } = require('../src/keyword/serpObserve');
+
+function readSearchPerformance() {
+  const file = path.join(app.getPath('userData'), 'search-performance.json');
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (saved && saved.version === 1 && Array.isArray(saved.entries)) return saved;
+  } catch (e) {}
+  return { version: 1, entries: [] };
+}
+
+function writeSearchPerformance(data) {
+  const file = path.join(app.getPath('userData'), 'search-performance.json');
+  const temp = file + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify({ version: 1, entries: Array.isArray(data.entries) ? data.entries : [] }, null, 2), 'utf8');
+  fs.renameSync(temp, file);
+}
+
+async function fetchMyBlogPosts(blogId) {
+  try {
+    if (!blogId) return { ok: false, posts: [] };
+    const https = require('https');
+    const get = (url) => new Promise((resolve) => {
+      try {
+        https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://blog.naver.com/' } }, (response) => {
+          let data = ''; response.on('data', (chunk) => (data += chunk)); response.on('end', () => resolve(data));
+        }).on('error', () => resolve('')).setTimeout(9000, function () { try { this.destroy(); } catch (e) {} resolve(''); });
+      } catch (e) { resolve(''); }
+    });
+    let posts = [];
+    for (let page = 1; page <= 2; page++) {
+      const raw = await get('https://blog.naver.com/PostTitleListAsync.naver?blogId=' + encodeURIComponent(blogId) + '&currentPage=' + page + '&countPerPage=30&categoryNo=0&parentCategoryNo=&viewdate=');
+      let json = null; try { json = JSON.parse(raw); } catch (e) {}
+      const list = json && Array.isArray(json.postList) ? json.postList : [];
+      for (const post of list) {
+        if (String(post.openType) !== '2' || !post.logNo) continue;
+        let title = String(post.title || '');
+        try { title = decodeURIComponent(title.replace(/\+/g, ' ')); } catch (e) {}
+        title = title.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").trim();
+        const item = { title, url: 'https://blog.naver.com/' + blogId + '/' + post.logNo, categoryNo: String(post.categoryNo || '') };
+        if (post.addDate != null) item.addDate = post.addDate;
+        posts.push(item);
+      }
+      if (list.length < 30) break;
+    }
+    const seen = new Set();
+    posts = posts.filter((post) => post.url && !seen.has(post.url) && seen.add(post.url));
+    return { ok: true, posts };
+  } catch (error) { return { ok: false, error: error.message, posts: [] }; }
+}
 
 // ★앱 표시 이름. userData 폴더는 이름과 분리해 고정(이름을 바꿔도 로그인 세션이 유지되게).
 try { app.setPath('userData', path.join(app.getPath('appData'), 'blog-auto')); } catch (e) {}
@@ -155,7 +207,7 @@ async function fetchOfficialFacts(keyword) {
   if (!kw) return { brief: '', pages: [] };
   // 1) 통합검색 렌더 → AI브리핑/상단 요약 텍스트 + 정부·기관 링크
   const searchUrl = 'https://search.naver.com/search.naver?query=' + encodeURIComponent(kw);
-  const SEARCH_EXTRACT = "(function(){var out={brief:'',urls:[]};try{function T(e){return (e&&e.innerText||'').replace(/\\s+/g,' ').trim();}"
+  const SEARCH_EXTRACT = "(function(){var out={brief:'',urls:[]};try{out.blocked=!!((document.body&&document.body.innerText)||'').includes('검색 서비스 이용이 제한되었습니다');function T(e){return (e&&e.innerText||'').replace(/\\s+/g,' ').trim();}"
     + "var sel=['.api_subject_bx','.sc_new','[class*=brief]','[class*=answer]','[class*=summary]','.main_pack .total_wrap','#main_pack'];"
     + "var chunks=[],seen1={};for(var i=0;i<sel.length;i++){var els=document.querySelectorAll(sel[i]);for(var j=0;j<els.length;j++){var t=T(els[j]);if(t.length>90&&!seen1[t.slice(0,40)]){seen1[t.slice(0,40)]=1;chunks.push(t);}if(chunks.length>=6)break;}if(chunks.length>=6)break;}"
     + "out.brief=chunks.join(' | ').slice(0,3500);if(out.brief.length<120){out.brief=T(document.querySelector('#main_pack')||document.body).slice(0,3000);}"
@@ -163,10 +215,16 @@ async function fetchOfficialFacts(keyword) {
     + "}catch(e){}return JSON.stringify(out);})()";
   let brief = '', urls = [];
   try {
-    const r = await scrapeRendered(searchUrl, SEARCH_EXTRACT, 4200, 'persist:naver', _DESKTOP_UA_OF);
-    const j = typeof r === 'string' ? JSON.parse(r) : (r || {});
+    const response = await runGuardedSearch('rendered:' + searchUrl, async () => {
+      const r = await scrapeRendered(searchUrl, SEARCH_EXTRACT, 4200, 'persist:naver-search', _DESKTOP_UA_OF);
+      const j = typeof r === 'string' ? JSON.parse(r) : (r || {});
+      return { status: j.blocked ? 403 : 200, body: j.blocked ? '검색 서비스 이용이 제한되었습니다' : JSON.stringify(j) };
+    });
+    const j = JSON.parse(response.body);
     brief = (j && j.brief) || ''; urls = (j && Array.isArray(j.urls) ? j.urls : []);
-  } catch (e) {}
+  } catch (e) {
+    if (e instanceof NaverSearchBlockedError || e && e.code === 'NAVER_SEARCH_BLOCKED') return { brief: '', pages: [] };
+  }
   // 2) 상위 정부/기관 페이지 1~2개 렌더 → 본문 텍스트(자격·금액·사용처·신청)
   const pages = [];
   const PAGE_EXTRACT = "(function(){try{var m=document.querySelector('#content')||document.querySelector('#container')||document.querySelector('.contents')||document.querySelector('main')||document.querySelector('[role=main]')||document.body;var t=(m.innerText||'').replace(/\\s+/g,' ').trim();return t.slice(0,2600);}catch(e){return '';}})()";
@@ -326,6 +384,13 @@ async function refreshGoogleTrends() {
 
 // ★우리 모듈은 앱 루트(../src) 기준. Electron에서도 그대로 require.
 const { buildKeywordRadar } = require('../src/keyword/radar');
+const {
+  mergeKeywordCandidates,
+  selectKeywordReportRows,
+  readSearchAdsWorkbook,
+  buildKeywordReportWorkbook,
+} = require('../src/keyword/report');
+const { normalizeKeywordReportRequest } = require('../src/keyword/report-ui');
 const { generatePost } = require('../src/generator/generatePost');
 const { generateSearchPost } = require('../src/generator/generateSearchPost');
 const { SEARCH_TOPIC_GROUPS, FAMILY_BY_KEY, SEARCH_FAMILIES, TONES_WITH_NOTE } = require('../src/generator/searchTopics');
@@ -516,6 +581,7 @@ function createWindow() {
   // 자동 모드 = 로그인 화면 건너뛰고 바로 메인 앱을 auto=1로 로드(세션은 디스크에 유지됨). kind=검색용 구분.
   if (AUTO_ANY) win.loadURL('http://127.0.0.1:' + APP_PORT + '/app/app.html?auto=1&kind=' + (AUTO_SEARCH_MODE ? 'search' : 'home'));
   else win.loadURL('http://127.0.0.1:' + APP_PORT + '/app/login.html'); // ★첫 화면 = 로그인 (http로 서빙)
+  win.webContents.once('destroyed', () => keywordReportPreparedBySender.delete(win.webContents.id));
 
   // ★순수 웹뷰(가로채기·팝업 없음). 카카오 로그인은 웹뷰 안(또는 웹뷰가 여는 자식 창)에서 자연스럽게 처리한다.
   //   진단용: 웹뷰 메인프레임 이동을 로그로 남겨 카카오가 어디까지 가는지 본다.
@@ -557,6 +623,8 @@ function createWindow() {
 //   동시에 못 읽어 "네이버 로그인 안 됨"으로 오판한다(로그 확인됨). → 두 번째 실행은 즉시 종료하고,
 //   이미 로그인된 "실행 중인 앱"에 자동 생성을 위임한다(argv의 --auto/--auto-search를 넘겨서). 앱이 꺼져 있으면 첫 실행이 그대로 자동 수행.
 let mainWindow = null;
+// 키워드 미리보기는 이 프로세스에서 만든 값만 저장한다. 렌더러는 파일 경로나 임의 행을 export로 넘길 수 없다.
+const keywordReportPreparedBySender = new Map();
 const _gotSingleLock = app.requestSingleInstanceLock();
 if (!_gotSingleLock) {
   app.quit();
@@ -598,6 +666,104 @@ app.whenReady().then(async () => {
       return { ok: true, rows };
     } catch (err) {
       return { ok: false, error: err.message };
+    }
+  });
+
+  // 네이버 검색광고에서 사용자가 내보낸 XLSX를 가져와 공개 자동완성 후보와 합친다.
+  // 로그인 세션이나 비공개 API는 사용하지 않으며 파일 경로는 OS 파일 선택창에서만 얻는다.
+  ipcMain.handle('keyword-report:prepare', async (event, input = {}) => {
+    let request;
+    try { request = normalizeKeywordReportRequest(input); }
+    catch (error) { return { ok: false, error: error.message }; }
+
+    try {
+      const picked = await dialog.showOpenDialog(mainWindow, {
+        title: '네이버 검색광고 키워드 도구에서 내려받은 XLSX 선택',
+        defaultPath: app.getPath('downloads'),
+        properties: ['openFile'],
+        filters: [{ name: 'Excel 통합 문서', extensions: ['xlsx'] }],
+      });
+      if (!picked || picked.canceled || !picked.filePaths || !picked.filePaths[0]) {
+        return { ok: true, cancelled: true };
+      }
+
+      const selectedFile = picked.filePaths[0];
+      if (path.extname(selectedFile).toLowerCase() !== '.xlsx') {
+        return { ok: false, error: '검색광고 .xlsx 파일을 선택해 주세요.' };
+      }
+      const importedAt = new Date().toISOString();
+      const imported = await readSearchAdsWorkbook(selectedFile, { importedAt });
+      let autocompleteKeywords = [];
+      let autocompleteWarning = '';
+      try {
+        autocompleteKeywords = await expandKeywords([request.seed], {
+          rounds: 1,
+          maxCandidates: 120,
+          delayMs: 120,
+        });
+      } catch (error) {
+        autocompleteWarning = error.message || '자동완성 후보를 가져오지 못했습니다.';
+      }
+      const candidates = mergeKeywordCandidates(request.seed, imported.rows, autocompleteKeywords);
+      const selected = selectKeywordReportRows(candidates, {
+        seed: request.seed,
+        count: request.count,
+        excludeTerms: request.excludeTerms,
+      });
+      const meta = {
+        seed: request.seed,
+        requestedCount: selected.requestedCount,
+        importedCount: imported.rows.length,
+        sourceFileName: imported.sourceFileName,
+        importedAt: imported.importedAt,
+        sourceSheetName: imported.sourceSheetName,
+        availableCount: selected.availableCount,
+        shortfall: selected.shortfall,
+        autocompleteEnabled: true,
+        autocompleteCount: autocompleteKeywords.length,
+        autocompleteWarning,
+        excludeTerms: request.excludeTerms,
+      };
+      const prepared = { request, rows: selected.rows, meta };
+      keywordReportPreparedBySender.set(event.sender.id, prepared);
+      return { ok: true, cancelled: false, rows: prepared.rows, meta };
+    } catch (error) {
+      return { ok: false, error: error.message || '검색광고 파일을 읽지 못했습니다.' };
+    }
+  });
+
+  // 준비된 미리보기만 저장한다. 렌더러는 경로나 XLSX 행을 IPC로 전달하지 않는다.
+  ipcMain.handle('keyword-report:export', async (event, input = {}) => {
+    const prepared = keywordReportPreparedBySender.get(event.sender.id);
+    if (!prepared) return { ok: false, error: '먼저 키워드 미리보기를 만들어 주세요.' };
+    let request;
+    try { request = normalizeKeywordReportRequest(input); }
+    catch (error) { return { ok: false, error: error.message }; }
+    if (request.seed !== prepared.request.seed || request.count !== prepared.request.count
+      || request.excludeTerms.join('\n') !== prepared.request.excludeTerms.join('\n')) {
+      return { ok: false, error: '조사 조건이 바뀌었습니다. 다시 조사한 뒤 저장해 주세요.' };
+    }
+
+    try {
+      const safeSeed = prepared.meta.seed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 40) || '키워드';
+      const suggestedName = `${safeSeed}_키워드_${prepared.meta.requestedCount}.xlsx`;
+      const saved = await dialog.showSaveDialog(mainWindow, {
+        title: '키워드 보고서 저장',
+        defaultPath: path.join(app.getPath('documents'), suggestedName),
+        buttonLabel: '엑셀 저장',
+        filters: [{ name: 'Excel 통합 문서', extensions: ['xlsx'] }],
+      });
+      if (!saved || saved.canceled || !saved.filePath) return { ok: true, cancelled: true };
+      let outputPath = saved.filePath;
+      const extension = path.extname(outputPath).toLowerCase();
+      if (!extension) outputPath += '.xlsx';
+      else if (extension !== '.xlsx') return { ok: false, error: '.xlsx 파일로 저장해 주세요.' };
+
+      const workbook = await buildKeywordReportWorkbook(prepared.rows, prepared.meta);
+      await fs.promises.writeFile(outputPath, workbook);
+      return { ok: true, cancelled: false, filePath: outputPath };
+    } catch (error) {
+      return { ok: false, error: error.message || '엑셀 파일을 저장하지 못했습니다.' };
     }
   });
 
@@ -880,7 +1046,14 @@ app.whenReady().then(async () => {
       return { ok: true, groups, families: SEARCH_FAMILIES, tonesWithNote: TONES_WITH_NOTE };
     } catch (e) { return { ok: false, error: e.message, groups: [] }; }
   });
-  ipcMain.handle('generate:search', async (_e, { topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review } = {}) => {
+  function appendSearchQuality(record) {
+    try {
+      const file = path.join(app.getPath('userData'), 'search-quality.jsonl');
+      fs.appendFileSync(file, JSON.stringify(record) + '\n', 'utf8');
+    } catch (e) {}
+  }
+
+  ipcMain.handle('generate:search', async (_e, { topic, keyword, extra, style, memo, paid, commerce, source, persona, avoidKeywords, review, opts } = {}) => {
     console.log('[IPC] generate:search', topic, keyword, style, memo ? 'memo' : '', paid || '', commerce || '', source ? 'link:' + (source.siteName || '') : '', persona ? 'persona' : '', review ? 'review:' + (review.target || '') : '');
     try {
       // ★키워드 없이 생성할 때 최근 쓴 키워드는 모델이 피하도록(중복 방지). 렌더러가 이미 concrete 키워드를 골라 넘기면 이건 보조.
@@ -889,8 +1062,54 @@ app.whenReady().then(async () => {
       //   이게 "인천 안마바우처가 정확히 뭔지·자격·사용처·신청"의 주력 근거가 된다(블로그는 보조).
       let officialFacts = null;
       if (!source && !review && keyword) { try { officialFacts = await fetchOfficialFacts(keyword); } catch (e) { officialFacts = null; } }
-      const result = await generateSearchPost({ topic, keyword: keyword || '', extra: extra || '', style: style || '', memo: memo || '', paid: paid || '', commerce: commerce || '', source: source || null, linkNote: (source && source.note) || '', persona: persona || '', avoidKeywords: avoid, officialFacts, review: review || null });
+      const result = await generateSearchPost({ topic, keyword: keyword || '', extra: extra || '', style: style || '', memo: memo || '', paid: paid || '', commerce: commerce || '', source: source || null, linkNote: (source && source.note) || '', persona: persona || '', avoidKeywords: avoid, officialFacts, review: review || null, strictEvidence: !!(opts && opts.auto === true) });
       const { post, validation, meta, attempts, factCheck, scrapeHealth: health } = result;
+      const brief = result.brief || {};
+      const contentCheck = result.contentCheck || null;
+      const status = result.status || 'review';
+      const holdReasons = result.holdReasons || [];
+      const reviewReasons = result.reviewReasons || [];
+      if (post) {
+        try {
+          const store = readSearchPerformance();
+          store.entries.push(createEntry({
+            keyword: keyword || (post.hashtags && post.hashtags[0]) || post.title,
+            topic,
+            intent: brief.intent || 'general',
+            status,
+            title: post.title || '',
+            generatedAt: new Date().toISOString(),
+            version: brief.version || '',
+          }));
+          store.entries = store.entries.slice(-500);
+          writeSearchPerformance(store);
+        } catch (error) { console.warn('[perf] 검색 성과 항목 저장 실패:', error.message); }
+      }
+      const briefSummary = brief ? {
+        intent: brief.intent,
+        intentLabel: brief.intentLabel,
+        requiredAnswers: brief.requiredAnswers || [],
+        ambiguous: !!brief.ambiguous,
+      } : null;
+      const missing = contentCheck && Array.isArray(contentCheck.missing) ? contentCheck.missing : [];
+      appendSearchQuality({
+        at: new Date().toISOString(),
+        version: brief.version || '',
+        keyword: keyword || '',
+        topic: topic || '',
+        intent: brief.intent || '',
+        ambiguous: !!brief.ambiguous,
+        status,
+        holdReasons,
+        reviewReasons,
+        title: post && post.title || '',
+        bodyLength: validation && validation.bodyLength || 0,
+        attempts: attempts || 0,
+        missing: missing.map((item) => item.id),
+      });
+      if (!post && status === 'hold') {
+        return { ok: true, status, holdReasons, reviewReasons, post: null, validation: null, meta: null, attempts: attempts || 0, brief: briefSummary, contentCheck, factCheck: null, scrapeHealth: health || null, officialUrls: [] };
+      }
       logTokenUsage('검색', keyword || (post && post.title) || '', meta);
       // ★쓴 키워드(또는 모델이 정한 제목 키워드)를 최근 목록에 저장 → 다음 생성/예약에서 회피.
       try {
@@ -899,7 +1118,7 @@ app.whenReady().then(async () => {
       } catch (e) {}
       // ★AI브리핑이 인용한 공식 출처 URL을 함께 반환 → 앱이 그 공식 사이트 이미지를 1순위로 수집(정책·정부 주제).
       const officialUrls = (officialFacts && Array.isArray(officialFacts.urls)) ? officialFacts.urls : [];
-      return { ok: true, post, validation, meta, attempts, officialUrls, factCheck: factCheck || null, scrapeHealth: health || null };
+      return { ok: true, post, validation, meta, attempts, officialUrls, factCheck: factCheck || null, scrapeHealth: health || null, status, holdReasons, reviewReasons, brief: briefSummary, contentCheck };
     } catch (e) { try { if (/exited with code|process|spawn|ENOENT|bash|not found/i.test(e && e.message || '')) diagnoseClaudeSpawn('generate:search ' + (e && e.message)); } catch (_) {} return { ok: false, error: e.message }; }
   });
 
@@ -1654,35 +1873,83 @@ app.whenReady().then(async () => {
   });
 
   // ★내 블로그 최근 글 목록 — "함께 보면 좋은 글"(내부 순환) 후보. 공개 API, 로그인 불필요·무료.
-  ipcMain.handle('blog:myPosts', async (_e, { blogId } = {}) => {
+  ipcMain.handle('blog:myPosts', async (_e, { blogId } = {}) => fetchMyBlogPosts(blogId));
+
+  ipcMain.handle('perf:list', async () => {
+    const store = readSearchPerformance();
+    const entries = store.entries.slice().sort((a, b) => (Date.parse(b.generatedAt) || 0) - (Date.parse(a.generatedAt) || 0));
+    return {
+      ok: true,
+      entries: entries.slice(0, 50),
+      summary: summarize(store.entries),
+      blockState: getBlockState(),
+      due: dueChecks(store.entries).length,
+    };
+  });
+
+  ipcMain.handle('perf:sync', async (_e, { blogId } = {}) => {
+    const fetched = await fetchMyBlogPosts(blogId);
+    if (!fetched.ok) return { ok: false, linked: 0, error: fetched.error || '블로그 글 목록을 가져오지 못했습니다.' };
+    const store = readSearchPerformance();
+    const before = store.entries.filter((entry) => !entry.url).length;
+    store.entries = matchPublished(store.entries, fetched.posts);
+    const after = store.entries.filter((entry) => !entry.url).length;
+    writeSearchPerformance(store);
+    return { ok: true, linked: Math.max(0, before - after) };
+  });
+
+  ipcMain.handle('perf:link', async (_e, { id, url } = {}) => {
+    const store = readSearchPerformance();
+    const index = store.entries.findIndex((entry) => entry.id === id);
+    if (index < 0) return { ok: false, error: '추적 항목을 찾지 못했습니다.' };
     try {
-      if (!blogId) return { ok: false, posts: [] };
-      const https = require('https');
-      const get = (url) => new Promise((res) => {
-        try {
-          https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://blog.naver.com/' } }, (r) => {
-            let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => res(d));
-          }).on('error', () => res('')).setTimeout(9000, function () { try { this.destroy(); } catch (e) {} res(''); });
-        } catch (e) { res(''); }
-      });
-      let posts = [];
-      for (let pg = 1; pg <= 2; pg++) {
-        const raw = await get('https://blog.naver.com/PostTitleListAsync.naver?blogId=' + encodeURIComponent(blogId) + '&currentPage=' + pg + '&countPerPage=30&categoryNo=0&parentCategoryNo=&viewdate=');
-        let j = null; try { j = JSON.parse(raw); } catch (e) {}
-        const list = (j && Array.isArray(j.postList)) ? j.postList : [];
-        for (const p of list) {
-          if (String(p.openType) !== '2') continue; // 공개글만
-          if (!p.logNo) continue;
-          let title = String(p.title || '');
-          try { title = decodeURIComponent(title.replace(/\+/g, ' ')); } catch (e) {}
-          title = title.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").trim();
-          posts.push({ title, url: 'https://blog.naver.com/' + blogId + '/' + p.logNo, categoryNo: String(p.categoryNo || '') });
+      store.entries[index] = linkManually(store.entries[index], url);
+      writeSearchPerformance(store);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
+  ipcMain.handle('perf:check', async () => {
+    const store = readSearchPerformance();
+    const due = dueChecks(store.entries).slice(0, 6);
+    let checked = 0;
+    let stopped = null;
+    for (const item of due) {
+      const index = store.entries.findIndex((entry) => entry.id === item.id);
+      if (index < 0) continue;
+      const entry = store.entries[index];
+      let blogRefs = [];
+      let blogTabObserved = false;
+      let failureReason = '';
+      try {
+        const response = await guardedSearchFetch(M.searchUrl.blog(entry.keyword));
+        if (response.status !== 200) throw new Error('블로그 검색 응답 오류: HTTP ' + response.status);
+        blogTabObserved = true;
+        blogRefs = M.parseSerpSections(response.body.toString('utf8')).blogRefs;
+      } catch (error) {
+        if (error instanceof NaverSearchBlockedError || error && error.code === 'NAVER_SEARCH_BLOCKED') {
+          stopped = 'blocked';
+          break;
         }
-        if (list.length < 30) break;
+        failureReason = String(error && error.message || error);
       }
-      const seen = {}; posts = posts.filter((p) => (p.url && !seen[p.url]) ? (seen[p.url] = 1) : false);
-      return { ok: true, posts };
-    } catch (e) { return { ok: false, error: e.message, posts: [] }; }
+      const integrated = await observeSerp(entry.keyword);
+      if (integrated.blocked) {
+        stopped = 'blocked';
+        break;
+      }
+      const blogTabRank = findRank(blogRefs, entry.blogId, entry.logNo);
+      const inIntegrated = findRank(integrated.blogRefs, entry.blogId, entry.logNo) != null;
+      const reason = failureReason || (!integrated.measured ? integrated.reason || '통합검색 관찰 실패' : '');
+      store.entries[index] = addCheck(entry, {
+        at: new Date().toISOString(), dueDay: item.dueDay, blogTabRank,
+        blogTabObserved, inIntegrated, measured: blogTabObserved && integrated.measured,
+        reason,
+      });
+      checked++;
+    }
+    if (checked) writeSearchPerformance(store);
+    return { ok: true, checked, stopped, blockState: getBlockState() };
   });
 
   ipcMain.handle('image:visionFilter', async (_e, { images, subject, keyword, keep, drop, photoOnly, allowBroadcast } = {}) => {
