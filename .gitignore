@@ -6,3 +6,8 @@ dist/
 *cookies*.json
 *auth*.json
 *token*.json
+# 생성 결과물·원본 데이터(커밋하지 않음)
+outputs/
+keyword-workflow/input/
+keyword-workflow/outputs/
+~$*
