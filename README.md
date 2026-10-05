@@ -1,7 +1,7 @@
 # blog-auto
 
 네이버 블로그 글을 Claude(구독 OAuth)로 자동 생성해 스마트에디터에 채워 넣는 Electron 앱.
-홈판용 · 검색용 · 예약 자동 생성 전부 **등급 제한 없이** 사용한다.
+홈판용 · 검색용 · 예약 자동 생성을 제한 없이 사용한다.
 
 ## 실행
 
@@ -9,7 +9,7 @@
 npm install          # Electron 43 + @anthropic-ai/claude-agent-sdk (claude.exe 동봉)
 npm start            # 앱 실행 → 로그인 화면(클로드 · 네이버 2단계)
 npm run dev          # DevTools 열고 실행
-npm run check        # 정적 일관성 검사 (IPC 채널 · window.api · 문법 · 등급 잔재)
+npm run check        # 정적 일관성 검사 (IPC 채널 · window.api · 문법)
 ```
 
 윈도우에서 `claude.exe`는 Git Bash가 필요하다. 시스템에 Git이 설치돼 있으면 자동으로 찾고, 없으면
@@ -57,15 +57,6 @@ src/place/            네이버 플레이스 장소 조회
 docs/                 프로젝트 상태와 검색용 기준 문서
 scripts/check.js      정적 일관성 검사
 ```
-
-## 원본 대비 변경 (포크 정리)
-
-- 아백(aros100.com) 로그인 · 마이페이지 스크랩 · 등급(free/allinone/booster) 판정 · 잠금 UI · 부스터 키워드 제거
-- 로그인 3단계 → 2단계 (클로드 · 네이버)
-- 생성 대기 화면의 유튜브 재생목록 제거
-- `toSmartEditor.js`(미완·미사용) · `mockups/` · `docs/` · `index.html`(시안 허브) 제거
-- userData 폴더 `naver-blog-auto` → `blog-auto`, 스케줄러 작업명 `AbaekBlogAutoPost` → `BlogAutoPost`
-- 그 외 수집·생성·검증·이미지·썸네일·에디터 주입·예약 로직은 원본 그대로
 
 ## 로컬 데이터 위치
 

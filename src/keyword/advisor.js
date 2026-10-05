@@ -1,7 +1,7 @@
 // 네이버 크리에이터 어드바이저 트렌드 키워드 수집.
 //
 // 특징: ①네이버 로그인 세션 필요(앱의 persist:naver 파티션으로 scrapeRendered) ②SPA라 렌더 후 DOM에서 뽑음.
-//   → 마이아백 mypage·엔터랭킹 셀렉터를 debug 덤프로 찾았던 방식 그대로. 첫 로그인 실행이 구조를 파일로 남긴다.
+//   → 셀렉터를 debug 덤프로 찾는 방식. 첫 로그인 실행이 구조를 파일로 남긴다.
 //
 // 데이터 2종(메모리 naver-search-tab-requirements / homefeed-operation-logic):
 //   - 검색유입 트렌드(설정순): 주제별 뜨는 검색어(+▲급상승)

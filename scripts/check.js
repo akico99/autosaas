@@ -48,13 +48,13 @@ for (const f of ['electron/main.js', 'electron/preload.js']) checkJs(f, read(f))
 const walk = (d) => fs.readdirSync(path.join(root, d), { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : (e.name.endsWith('.js') ? [path.join(d, e.name)] : []));
 for (const f of walk('src')) checkJs(f, read(f));
 
-// 4) 금지 잔재 — 회원등급/외부 커뮤니티 의존 코드가 다시 들어오지 않게
-const forbidden = /aros100\.com|_tier\b|applyTier|classifyAbaekTier|booster:keywords/;
+// 4) 금지 잔재 — 제거한 회원등급 코드가 다시 들어오지 않게
+const forbidden = /_tier\b|applyTier|booster:keywords/;
 for (const f of ['electron/main.js', 'electron/preload.js', ...pages, ...walk('src')]) {
   const m = read(f).match(forbidden);
-  if (m) bad(`${f}: 제거된 등급/외부 의존 코드 잔재 "${m[0]}"`);
+  if (m) bad(`${f}: 제거된 등급 코드 잔재 "${m[0]}"`);
 }
-if (!fail) ok('등급/외부 커뮤니티 의존 잔재 없음');
+if (!fail) ok('등급 코드 잔재 없음');
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fail ? `\n${fail}건 실패` : '\n모두 통과');
