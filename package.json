@@ -9,16 +9,20 @@
     "start": "electron .",
     "dev": "cross-env DEV_TOOLS=1 electron .",
     "check": "node scripts/check.js",
-    "doctor": "node scripts/doctor.js"
+    "doctor": "node scripts/doctor.js",
+    "test": "node --test scripts/tests/*.test.js",
+    "test:rendered-browser": "node --test --test-concurrency=1 scripts/test-rendered-collector-browser.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.201",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "cheerio": "1.0.0",
     "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "cross-env": "^7.0.3",
-    "electron": "^43.2.0"
+    "electron": "^43.2.0",
+    "playwright": "^1.63.0"
   }
 }

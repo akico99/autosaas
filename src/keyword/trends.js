@@ -17,12 +17,36 @@ const health = require('../scrape/health');
 const { guardedSearchFetch, NaverSearchBlockedError } = require('../scrape/naverSearchGuard');
 
 function isSearchBlockedError(error) {
-  return error instanceof NaverSearchBlockedError || !!(error && error.code === 'NAVER_SEARCH_BLOCKED');
+  return error instanceof NaverSearchBlockedError || !!(error && (
+    error.code === 'NAVER_SEARCH_BLOCKED' || error.code === 'NAVER_SEARCH_RATE_LIMITED'
+      || error.kind === 'blocked' || error.kind === 'rate_limited'
+  ));
+}
+
+function errorHealthMeta(error) {
+  const kind = error && error.kind
+    || (error && error.status ? 'http_error' : error instanceof SyntaxError ? 'parse_error' : 'collection_error');
+  return {
+    blocked: isSearchBlockedError(error),
+    errorKind: kind,
+    status: error && Number.isFinite(Number(error.status)) ? Number(error.status) : null,
+    errorCode: error && error.code || '',
+    resultKind: 'error',
+  };
+}
+
+function parserHealthMeta(items) {
+  if (items && items.resultKind === 'parser_mismatch') return { errorKind: 'parser_mismatch', resultKind: 'parser_mismatch' };
+  return { resultKind: items && items.resultKind || (items && items.length ? 'ok' : 'empty') };
 }
 
 async function fetchSearchHtml(url) {
+  return (await fetchSearchPage(url)).html;
+}
+
+async function fetchSearchPage(url) {
   const response = await guardedSearchFetch(url);
-  return response.body.toString('utf8');
+  return { html: response.body.toString('utf8'), collectedAt: response.collectedAt || null };
 }
 
 // 원시 바이트로 받기(인코딩이 EUC-KR일 수 있어 문자열 concat 금지).
@@ -129,14 +153,14 @@ async function fetchZum() {
 //   이걸 생성기에 주면 인물·사건을 지어내지 않고 실제 사실만 쓰게 된다. 무키(공개 검색).
 async function fetchNewsHeadlines(keyword) {
   try {
-    const html = await fetchSearchHtml(M.searchUrl.news(keyword));
+    const page = await fetchSearchPage(M.searchUrl.news(keyword));
     // ★헤드라인(제목) + 요약 스니펫을 짝지어 "풍부한 사실"로 만든다.
     //   헤드라인만 주면 모델이 살을 지어냄(가짜 발언·틀린 별명) → 스니펫에 실제 내용이 있어 날조를 막는다.
-    const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 180 });
-    health.record('news-headlines', out.length, { query: keyword });
+    const out = M.grabTitleSnippetPairs(page.html, { max: 8, snippetLen: 180, sourceType: 'news-snippet', collectedAt: page.collectedAt });
+    health.record('news-headlines', out.length, { query: keyword, ...parserHealthMeta(out) });
     return out;
   } catch (e) {
-    health.record('news-headlines', 0, { query: keyword, blocked: isSearchBlockedError(e) });
+    health.record('news-headlines', 0, { query: keyword, ...errorHealthMeta(e) });
     return [];
   }
 }
@@ -146,12 +170,12 @@ async function fetchNewsHeadlines(keyword) {
 async function fetchPlaceReviews(placeName) {
   try {
     const q = (placeName || '').trim() + ' 후기';
-    const html = await fetchSearchHtml(M.searchUrl.blog(q));
-    const out = M.grabTitleSnippetPairs(html, { max: 8, snippetLen: 160 });
-    health.record('place-reviews', out.length, { query: q });
+    const page = await fetchSearchPage(M.searchUrl.blog(q));
+    const out = M.grabTitleSnippetPairs(page.html, { max: 8, snippetLen: 160, sourceType: 'blog-snippet', collectedAt: page.collectedAt });
+    health.record('place-reviews', out.length, { query: q, ...parserHealthMeta(out) });
     return out;
   } catch (e) {
-    health.record('place-reviews', 0, { query: placeName, blocked: isSearchBlockedError(e) });
+    health.record('place-reviews', 0, { query: placeName, ...errorHealthMeta(e) });
     return [];
   }
 }
@@ -186,7 +210,7 @@ async function fetchNearbyAttractions(region) {
     health.record('serp', out.length, { query });
     return out;
   } catch (e) {
-    if (isSearchBlockedError(e)) health.record('serp', 0, { query: (region || '').trim() + ' 가볼만한곳', blocked: true });
+    health.record('serp', 0, { query: (region || '').trim() + ' 가볼만한곳', ...errorHealthMeta(e) });
     return [];
   }
 }
@@ -197,12 +221,12 @@ async function fetchNearbyAttractions(region) {
 async function fetchBlogFacts(keyword) {
   try {
     const kw = (keyword || '').trim();
-    const html = await fetchSearchHtml(M.searchUrl.blog(kw));
-    const out = M.grabTitleSnippetPairs(html, { max: 10, snippetLen: 200 }).slice(0, 8);
-    health.record('blog-facts', out.length, { query: kw });
+    const page = await fetchSearchPage(M.searchUrl.blog(kw));
+    const out = M.grabTitleSnippetPairs(page.html, { max: 8, snippetLen: 200, sourceType: 'blog-snippet', collectedAt: page.collectedAt });
+    health.record('blog-facts', out.length, { query: kw, ...parserHealthMeta(out) });
     return out;
   } catch (e) {
-    health.record('blog-facts', 0, { query: keyword, blocked: isSearchBlockedError(e) });
+    health.record('blog-facts', 0, { query: keyword, ...errorHealthMeta(e) });
     return [];
   }
 }
@@ -216,22 +240,37 @@ function _stripHtml(s) {
     .replace(/\[[^\]]{0,40}(기자|특파원)\]|\bⓒ[^ ]*|무단[ ]?전재[\s\S]*$|▶[\s\S]*$/g, ' ').replace(/\s+/g, ' ').trim();
 }
 // oid/aid로 기사 본문을 읽는다. ①스포츠/e스포츠/연예=api-gw JSON API(본문·인터뷰 Q&A까지) ②일반뉴스=n.news 모바일 #dic_area.
-async function _fetchArticleBody(oid, aid, kind) {
-  // 1) api-gw JSON (sports/esports/entertain)
+async function _fetchArticleBody(oid, aid, kind, { sourceUrl = '', fetchBuffer: request = fetchBuffer } = {}) {
+  if (kind === 'news') {
+    const url = `https://n.news.naver.com/mnews/article/${oid}/${aid}`;
+    try {
+      const html = (await request(url)).toString('utf8');
+      const bodyMatch = html.match(M.ARTICLE_BODY_RE);
+      const titleMatch = html.match(M.ARTICLE_TITLE_RE);
+      if (bodyMatch) {
+        const body = _stripHtml(bodyMatch[1]);
+        if (body.length > 120) return { title: titleMatch ? _stripHtml(titleMatch[1]) : '', body, url, collectedAt: new Date().toISOString() };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  if (kind !== 'sports' && kind !== 'entertain') return null;
+  const expectedHost = kind === 'entertain' ? /^(?:m\.)?entertain\.naver\.com$/ : /^(?:m\.)?sports\.naver\.com$/;
+  let parsedSource;
+  try { parsedSource = new URL(sourceUrl); } catch (e) { return null; }
+  const expectedPath = new RegExp(`(?:^|/)article/${oid}/${aid}(?:/|$)`);
+  if (parsedSource.protocol !== 'https:' || !expectedHost.test(parsedSource.hostname) || !expectedPath.test(parsedSource.pathname)) return null;
+
+  // Sports and entertainment articles use their own JSON endpoint. Do not use an n.news URL
+  // with the same numeric IDs when that endpoint fails: the namespace may identify another item.
   try {
     const host = kind === 'entertain' ? 'https://api-gw.entertain.naver.com/news/article/' : 'https://api-gw.sports.naver.com/news/article/';
-    const j = JSON.parse((await fetchBuffer(host + oid + '/' + aid)).toString('utf8'));
+    const j = JSON.parse((await request(host + oid + '/' + aid)).toString('utf8'));
     const a = j && j.result && j.result.articleInfo && j.result.articleInfo.article;
     if (a && (a.content || a.refinedContent)) {
-      return { title: _stripHtml(a.title), body: _stripHtml(a.refinedContent || a.content) };
+      return { title: _stripHtml(a.title), body: _stripHtml(a.refinedContent || a.content), url: sourceUrl, collectedAt: new Date().toISOString() };
     }
-  } catch (e) {}
-  // 2) 일반뉴스 n.news 모바일 #dic_area
-  try {
-    const ah = (await fetchBuffer('https://n.news.naver.com/mnews/article/' + oid + '/' + aid)).toString('utf8');
-    const bm = ah.match(M.ARTICLE_BODY_RE);
-    const tm = ah.match(M.ARTICLE_TITLE_RE);
-    if (bm) { const body = _stripHtml(bm[1]); if (body.length > 120) return { title: tm ? _stripHtml(tm[1]) : '', body }; }
   } catch (e) {}
   return null;
 }
@@ -270,25 +309,29 @@ async function fetchArticleImages(keyword, { limit = 8 } = {}) {
     }
     return out;
   } catch (e) {
-    if (isSearchBlockedError(e)) health.record('news-articles', 0, { query: keyword, blocked: true });
+    health.record('news-articles', 0, { query: keyword, ...errorHealthMeta(e) });
     return [];
   }
 }
-async function fetchNewsArticles(keyword, { limit = 3, maxLen = 1800 } = {}) {
+async function fetchNewsArticles(keyword, { limit = 3, maxLen = 1800, fetchArticleBody = _fetchArticleBody } = {}) {
   try {
     const kw = (keyword || '').trim();
     if (!kw) return [];
-    const html = await fetchSearchHtml(M.searchUrl.news(kw));
-    const items = M.grabArticleRefs(html, limit + 5); // 기사 링크(스포츠·연예·일반) oid/aid
+    const page = await fetchSearchPage(M.searchUrl.news(kw));
+    const items = M.grabArticleRefs(page.html, limit + 5); // 기사 링크(스포츠·연예·일반) oid/aid
     const out = [];
     for (const it of items) {
       if (out.length >= limit) break;
-      const r = await _fetchArticleBody(it.oid, it.aid, it.kind);
-      if (r && r.body && r.body.length > 120) out.push({ title: r.title, body: r.body.slice(0, maxLen) });
+      const r = await fetchArticleBody(it.oid, it.aid, it.kind, { sourceUrl: it.url });
+      if (r && r.body && r.body.length > 120) out.push({ title: r.title, body: r.body.slice(0, maxLen), url: r.url || it.url, collectedAt: r.collectedAt });
     }
-    health.record('news-articles', out.length, { query: kw });
-    return out;
-  } catch (e) { health.record('news-articles', 0, { query: keyword, blocked: isSearchBlockedError(e) }); return []; }
+    const sources = out.filter((item) => item.url && item.title && item.body).map((item) => ({
+      url: item.url, title: item.title, text: item.body,
+      sourceType: 'news-article', kind: 'article-body', contentKind: 'body', collectedAt: item.collectedAt,
+    }));
+    health.record('news-articles', out.length, { query: kw, resultKind: out.length ? 'ok' : 'empty' });
+    return M.attachSourceMetadata(out, { sources, resultKind: out.length ? 'ok' : 'empty', parserMismatch: false });
+  } catch (e) { health.record('news-articles', 0, { query: keyword, ...errorHealthMeta(e) }); return []; }
 }
 
 // ★이 주제로 "지금 네이버 상단에 뜬 실제 제목들" — 제목 작성 시 톤·각도 참고용(그대로 베끼지 말 것, 프롬프트에서 강제).
@@ -306,13 +349,13 @@ async function fetchTopTitles(keyword) {
       /^(?:연예|스포츠|정치|경제|사회|생활\/?문화|문화|국제|세계|IT\/?과학|IT)\s*[-·|]\s*\S{2,10}$/.test(t) || // 언론사 섹션 라벨
       /^https?:/i.test(t);
     const out = []; const seen = new Set();
-    for (const t of M.grabSds(html, 'headline1', 16)) {
+    for (const t of M.grabCardTitles(html, 16)) {
       if (t && t.length >= 6 && !seen.has(t) && !isNoise(t)) { seen.add(t); out.push(t); }
     }
-    health.record('top-titles', out.length, { query: kw });
+    health.record('top-titles', out.length, { query: kw, resultKind: out.length ? 'ok' : 'empty' });
     return out.slice(0, 10);
   } catch (e) {
-    health.record('top-titles', 0, { query: keyword, blocked: isSearchBlockedError(e) });
+    health.record('top-titles', 0, { query: keyword, ...errorHealthMeta(e) });
     return [];
   }
 }
@@ -344,6 +387,16 @@ async function fetchRealtimeTrends() {
   const [signal, nate, zum, google, news] = await Promise.allSettled([
     fetchSignal(), fetchNate(), fetchZum(), fetchGoogleTrends(), fetchNaverNews('102'),
   ]);
+  const sourceRows = [
+    ['trend-signal', signal], ['trend-nate', nate], ['trend-zum', zum],
+    ['trend-google', google], ['trend-naver-news', news],
+  ];
+  for (const [id, result] of sourceRows) {
+    const items = result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : [];
+    health.record(id, items.length, result.status === 'rejected'
+      ? errorHealthMeta(result.reason)
+      : { resultKind: items.length ? 'ok' : 'empty' });
+  }
   const norm = (s) => s.replace(/\s+/g, '').replace(/[^가-힣a-zA-Z0-9]/g, '');
   const seen = new Set();
   const merged = [];
@@ -360,4 +413,4 @@ async function fetchRealtimeTrends() {
   return merged;
 }
 
-module.exports = { fetchRealtimeTrends, fetchSignal, fetchNate, fetchZum, fetchGoogleTrends, fetchNaverNews, fetchNewsHeadlines, fetchNewsArticles, fetchArticleImages, fetchBlogFacts, fetchPlaceReviews, fetchNearbyAttractions, fetchTopTitles };
+module.exports = { fetchRealtimeTrends, fetchSignal, fetchNate, fetchZum, fetchGoogleTrends, fetchNaverNews, fetchNewsHeadlines, fetchNewsArticles, fetchArticleImages, fetchBlogFacts, fetchPlaceReviews, fetchNearbyAttractions, fetchTopTitles, _fetchArticleBodyForTest: _fetchArticleBody };

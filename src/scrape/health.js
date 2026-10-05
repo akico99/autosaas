@@ -25,6 +25,12 @@ const SOURCES = {
   'google-trends': { label: '구글 트렌드', fix: 'src/keyword/googleTrends.js' },
   'advisor': { label: '크리에이터 어드바이저', fix: 'src/keyword/advisor.js (네이버 로그인 필요)' },
   'namu-background': { label: '인물 배경(나무위키)', fix: 'src/keyword/background.js' },
+  'official-facts': { label: '기관 페이지 원문', fix: 'electron/main.js fetchOfficialFacts' },
+  'trend-signal': { label: 'Signal 실시간 트렌드', fix: 'src/keyword/trends.js fetchSignal' },
+  'trend-nate': { label: '네이트 실시간 트렌드', fix: 'src/keyword/trends.js fetchNate' },
+  'trend-zum': { label: '줌 실시간 트렌드', fix: 'src/keyword/trends.js fetchZum' },
+  'trend-google': { label: 'Google Trends', fix: 'src/keyword/trends.js fetchGoogleTrends' },
+  'trend-naver-news': { label: '네이버 뉴스 트렌드', fix: 'src/keyword/trends.js fetchNaverNews' },
 };
 
 // 소스별 최근 기록: { count, at, zeroStreak }
@@ -40,11 +46,16 @@ function record(source, count, meta = {}) {
   try {
     const n = Number(count) || 0;
     const prev = state.get(source) || { zeroStreak: 0 };
+    const errorKind = meta.errorKind || (meta.blocked ? 'blocked' : '');
     state.set(source, {
       count: n,
       at: Date.now(),
       query: meta.query || '',
       blocked: meta.blocked === true,
+      status: meta.status != null && Number.isFinite(Number(meta.status)) ? Number(meta.status) : null,
+      errorKind,
+      errorCode: meta.errorCode || '',
+      resultKind: meta.resultKind || (errorKind ? 'error' : n === 0 ? 'empty' : 'ok'),
       zeroStreak: n === 0 ? (prev.zeroStreak || 0) + 1 : 0,
     });
   } catch (e) { /* 진단이 본 작업을 막지 않는다 */ }
@@ -65,8 +76,12 @@ function snapshot() {
 function broken(minStreak = 1) {
   const out = [];
   for (const [k, v] of state) {
-    if ((v.zeroStreak || 0) >= minStreak || v.blocked) {
-      out.push({ source: k, label: (SOURCES[k] || {}).label || k, fix: (SOURCES[k] || {}).fix || '', zeroStreak: v.zeroStreak, query: v.query, blocked: !!v.blocked });
+    if (v.blocked || v.errorKind || v.resultKind === 'parser_mismatch') {
+      out.push({
+        source: k, label: (SOURCES[k] || {}).label || k, fix: (SOURCES[k] || {}).fix || '',
+        zeroStreak: v.zeroStreak, query: v.query, blocked: !!v.blocked,
+        status: v.status, errorKind: v.errorKind, errorCode: v.errorCode, resultKind: v.resultKind,
+      });
     }
   }
   return out;
@@ -78,16 +93,29 @@ function broken(minStreak = 1) {
  */
 function report() {
   const b = broken(1);
-  const blocked = [...state.values()].some((value) => value.blocked);
+  const blocked = [...state.values()].some((value) => value.blocked || value.errorKind === 'rate_limited');
   if (blocked) {
-    return { ok: false, blocked: true, broken: b, message: getBlockState().message };
+    const block = getBlockState();
+    const statusNote = block.status ? ` (원인: ${block.kind || 'blocked'}, HTTP ${block.status})` : '';
+    return {
+      ok: false, blocked: true, broken: b,
+      status: block.status || null, errorKind: block.kind || 'blocked', errorCode: block.code || '',
+      message: (block.message || '네이버 검색이 일시적으로 제한되어 자료 수집을 멈췄습니다. 잠시 후 다시 시도해 주세요.') + statusNote,
+    };
   }
   if (!b.length) return { ok: true, broken: [], message: '' };
-  const names = b.map((x) => x.label).join(', ');
+  const diagnostics = b.map((item) => {
+    if (item.resultKind === 'parser_mismatch' || item.errorKind === 'parser_mismatch') {
+      return `${item.label}: 페이지 구조를 확인하지 못했습니다`;
+    }
+    const kind = item.errorKind || 'collection_error';
+    const status = item.status == null ? '' : `, HTTP ${item.status}`;
+    return `${item.label}: ${kind}${status}`;
+  });
   return {
     ok: false,
     broken: b,
-    message: `자료 수집이 0건인 곳이 있어요: ${names}. 네이버 페이지 구조가 바뀌었을 수 있어요 — 이 상태로 쓴 글은 근거가 부족할 수 있습니다.`,
+    message: `자료 수집 중 확인이 필요한 오류가 있어요: ${diagnostics.join('; ')}.`,
   };
 }
 

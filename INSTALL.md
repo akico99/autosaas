@@ -4,7 +4,7 @@
 
 | 프로그램 | 왜 | 확인 명령 | 받는 곳 |
 |---|---|---|---|
-| **Node.js** 18 이상 (LTS 권장) | 앱 실행 엔진 | `node -v` | https://nodejs.org (LTS) |
+| **Node.js** 18.17 이상 (LTS 권장) | 앱 실행 엔진·카드 DOM 파서 | `node -v` | https://nodejs.org (LTS) |
 | **Git for Windows** | 클로드 실행기(`claude.exe`)가 bash를 필요로 함. 없으면 로그인·글 생성이 죽음 | `git --version` | https://git-scm.com/download/win |
 
 둘 다 설치 화면에서 **다음만 눌러 기본값으로** 설치하면 됩니다. 설치 후 **터미널(PowerShell)을 새로 열어야** 인식됩니다.

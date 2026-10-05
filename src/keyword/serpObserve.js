@@ -55,11 +55,16 @@ async function observeSerp(keyword, { fetch = guardedSearchFetch } = {}) {
 
   try {
     const response = responseParts(await fetch(M.searchUrl.integrated(query)));
-    if (isBlockPage(response.status, response.body)) throw new NaverSearchBlockedError();
+    if (isBlockPage(response.status, response.body)) {
+      const status = Number(response.status) === 429 ? 429 : 403;
+      throw new NaverSearchBlockedError({ status, kind: status === 429 ? 'rate_limited' : 'blocked' });
+    }
     if (response.status !== 200) throw new Error('HTTP ' + (response.status || '오류'));
     const html = Buffer.isBuffer(response.body) ? response.body.toString('utf8') : String(response.body || '');
     const parsed = M.parseSerpSections(html);
     const { flags } = flagsFor(parsed);
+    const topDocs = M.grabObservedTitleSnippetPairs(html, { max: 6, snippetLen: 120 });
+    const resultKind = parsed.resultKind === 'ok' || topDocs.length ? 'ok' : parsed.resultKind;
     const result = {
       measured: true,
       observedAt: new Date().toISOString(),
@@ -68,16 +73,28 @@ async function observeSerp(keyword, { fetch = guardedSearchFetch } = {}) {
       flags,
       firstSections: parsed.sections.slice(0, 3).map(classifySection).filter(Boolean),
       blogRefs: parsed.blogRefs,
-      topDocs: M.grabTitleSnippetPairs(html, { max: 6, snippetLen: 120 }),
+      topDocs,
+      resultKind,
     };
-    health.record('serp', result.sections.length, { query });
+    if (resultKind === 'parser_mismatch') {
+      result.measured = false;
+      result.reason = 'parser_mismatch';
+      health.record('serp', 0, { query, resultKind, errorKind: resultKind });
+      return result;
+    }
+    health.record('serp', result.sections.length + topDocs.length, { query, resultKind: resultKind === 'no_results' ? 'empty' : 'ok' });
     return cacheResult(query, result, now);
   } catch (error) {
-    const blocked = error instanceof NaverSearchBlockedError || error && error.code === 'NAVER_SEARCH_BLOCKED';
+    const blocked = error instanceof NaverSearchBlockedError || error && (
+      error.code === 'NAVER_SEARCH_BLOCKED' || error.code === 'NAVER_SEARCH_RATE_LIMITED'
+        || error.kind === 'blocked' || error.kind === 'rate_limited'
+    );
+    const status = Number(error && error.status) || undefined;
+    const errorKind = error && error.kind || (blocked ? 'blocked' : 'collection_error');
     const result = blocked
-      ? { measured: false, blocked: true, reason: 'blocked' }
-      : { measured: false, blocked: false, reason: String(error && error.message || error || '검색 결과 관찰 실패') };
-    health.record('serp', 0, { query, blocked });
+      ? { measured: false, blocked: true, reason: errorKind }
+      : { measured: false, blocked: false, reason: errorKind };
+    health.record('serp', 0, { query, blocked, status, errorKind, errorCode: error && error.code || '', resultKind: 'error' });
     return result;
   }
 }

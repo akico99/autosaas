@@ -18,6 +18,7 @@
 // ─────────────────────────────────────────────────────────────
 // A. HTML 정규식
 // ─────────────────────────────────────────────────────────────
+const cheerio = require('cheerio');
 
 // 네이버 통합검색(뉴스·블로그) 결과의 텍스트 컴포넌트 클래스.
 // 예) <span class="sds-comps-text sds-comps-text-type-headline1 ...">제목</span>
@@ -45,24 +46,169 @@ function grabSds(html, type, max = 10) {
   return out;
 }
 
-/**
- * 검색결과에서 "제목 — 요약" 쌍을 만든다.
- * 제목만 주면 모델이 살을 지어내므로(가짜 발언·틀린 별명), 요약 스니펫을 붙여 날조를 막는다.
- * @returns {string[]} 최대 max개, 중복 제목 제거됨
- */
-function grabTitleSnippetPairs(html, { max = 8, snippetLen = 180, minSnippet = 20 } = {}) {
-  const heads = grabSds(html, 'headline1', max);
-  const bodies = grabSds(html, 'body1', max);
+const HEADLINE_SELECTOR = 'span[class*="sds-comps-text-type-headline1"]';
+const BODY_SELECTOR = 'span[class*="sds-comps-text-type-body1"]';
+const CARD_SELECTOR = '.sds-comps-vertical-layout, .sds-comps-base-layout';
+
+function readAbsoluteHref($, element) {
+  const raw = $(element).closest('a[href]').attr('href');
+  if (!raw || !/^https?:\/\//i.test(raw.trim())) return null;
+  try {
+    const parsed = new URL(raw.trim());
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+    if (parsed.hostname === 'search.naver.com') return null;
+    return { raw: raw.trim(), parsed };
+  } catch (_) { return null; }
+}
+
+function sourceUrlAllowed(url, sourceType) {
+  if (!url) return false;
+  if (sourceType === 'blog-snippet') {
+    if (!['blog.naver.com', 'm.blog.naver.com'].includes(url.hostname)) return false;
+    if (/^\/(?:PostView\.naver)$/i.test(url.pathname)) return !!(url.searchParams.get('blogId') && url.searchParams.get('logNo'));
+    return /^\/[A-Za-z0-9_-]+\/\d{6,}\/?$/.test(url.pathname);
+  }
+  if (sourceType !== 'news-snippet') return false;
+  const hostname = url.hostname.toLowerCase();
+  const disallowed = /(?:^|\.)(?:blog\.naver\.com|cafe\.naver\.com|kin\.naver\.com|map\.naver\.com|shopping\.naver\.com|smartstore\.naver\.com|namu\.wiki|wikipedia\.org|youtube\.com|tiktok\.com|instagram\.com|facebook\.com)$/i;
+  if (disallowed.test(hostname) || hostname === 'search.naver.com') return false;
+  const knownNaverArticle = hostname === 'n.news.naver.com' && /(?:^|\/)mnews\/article\/\d{2,4}\/\d{6,}/i.test(url.pathname);
+  const articlePath = /(?:^|\/)(?:article|news|story|press|report|read|view)(?:[./_-]|$)/i.test(url.pathname);
+  return knownNaverArticle || articlePath;
+}
+
+function hasAdMarker($, card) {
+  let scope = $(card);
+  while (scope.length && !scope.is('body, html')) {
+    if (scope.find(HEADLINE_SELECTOR).length > 1) break;
+    const marker = scope.find('[aria-label*="광고"], [class*="ad-badge"], [class*="advert"], [data-ad]');
+    if (marker.length > 0 || scope.find('[class*="badge"], [class*="label"]').toArray().some((item) => /^광고$/.test($(item).text().trim()))) return true;
+    scope = scope.parent();
+  }
+  return false;
+}
+
+function parseSearchCards(html, { max = 8, minSnippet = 20, sourceType = 'news-snippet', collectedAt = new Date().toISOString() } = {}) {
+  const $ = cheerio.load(String(html || ''));
+  const observedAt = Number.isFinite(Date.parse(collectedAt)) ? new Date(collectedAt).toISOString() : new Date().toISOString();
+  const headlines = $(HEADLINE_SELECTOR).toArray();
+  const seen = new Set();
+  const sources = [];
+
+  for (const headline of headlines) {
+    if (sources.length >= max) break;
+    const title = $(headline).text().replace(/\s+/g, ' ').trim();
+    const titleLink = readAbsoluteHref($, headline);
+    if (!title || !titleLink || !sourceUrlAllowed(titleLink.parsed, sourceType)) continue;
+
+    let card = $(headline).parent();
+    let source = null;
+    while (card.length && !card.is('body, html')) {
+      if (card.is(CARD_SELECTOR)) {
+        const cardHeadlines = card.find(HEADLINE_SELECTOR);
+        if (cardHeadlines.length === 1 && !hasAdMarker($, card)) {
+          const snippets = card.find(BODY_SELECTOR).toArray();
+          for (const snippet of snippets) {
+            const snippetLink = readAbsoluteHref($, snippet);
+            const text = $(snippet).text().replace(/\s+/g, ' ').trim();
+            if ((!snippetLink || snippetLink.raw === titleLink.raw) && text.length >= minSnippet) {
+              source = {
+                url: titleLink.raw,
+                title,
+                text: text.slice(0, 2000),
+                sourceType,
+                kind: 'search-snippet',
+                contentKind: 'snippet',
+                collectedAt: observedAt,
+              };
+              break;
+            }
+          }
+        }
+        if (source) break;
+      }
+      card = card.parent();
+    }
+    if (!source) continue;
+    const key = `${source.url}\n${source.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push(source);
+  }
+
+  const noResultText = $('.not_found02').toArray().map((element) => $(element).text()).join(' ');
+  const explicitNoResults = headlines.length === 0 && /검색\s*결과가\s*없습니다|검색결과가\s*없습니다|결과가\s*없습니다/.test(noResultText);
+  const resultKind = sources.length ? 'ok' : explicitNoResults ? 'no_results' : 'parser_mismatch';
+  return { sources, resultKind, parserMismatch: resultKind === 'parser_mismatch', observedAt };
+}
+
+function attachSourceMetadata(array, parsed) {
+  Object.defineProperties(array, {
+    sources: { value: parsed.sources, enumerable: false, configurable: true },
+    resultKind: { value: parsed.resultKind, enumerable: false, configurable: true },
+    parserMismatch: { value: parsed.parserMismatch, enumerable: false, configurable: true },
+  });
+  return array;
+}
+
+/** Return legacy title/snippet strings while retaining verified card provenance on `.sources`. */
+function grabTitleSnippetPairs(html, { max = 8, snippetLen = 180, minSnippet = 20, sourceType = 'news-snippet', collectedAt } = {}) {
+  const parsed = parseSearchCards(html, { max, minSnippet, sourceType, collectedAt });
+  const out = parsed.sources.map((source) => `${source.title} — ${source.text.slice(0, snippetLen)}`);
+  return attachSourceMetadata(out, parsed);
+}
+
+/** Unverified SERP observation text; intentionally carries no source records. */
+function grabObservedTitleSnippetPairs(html, { max = 6, snippetLen = 120, minSnippet = 1 } = {}) {
+  const $ = cheerio.load(String(html || ''));
   const out = [];
   const seen = new Set();
-  for (let i = 0; i < heads.length; i++) {
-    const h = heads[i];
-    if (!h || seen.has(h)) continue;
-    seen.add(h);
-    const b = bodies[i];
-    out.push(b && b.length > minSnippet ? `${h} — ${b.slice(0, snippetLen)}` : h);
+  for (const headline of $(HEADLINE_SELECTOR).toArray()) {
+    const title = $(headline).text().replace(/\s+/g, ' ').trim();
+    if (!title || seen.has(title)) continue;
+    let scope = $(headline).parent();
+    while (scope.length && !scope.is('html')) {
+      const titles = scope.find(HEADLINE_SELECTOR);
+      const bodies = scope.find(BODY_SELECTOR);
+      if (titles.length === 1 && bodies.length === 1) {
+        const snippet = bodies.first().text().replace(/\s+/g, ' ').trim();
+        if (snippet.length >= minSnippet) {
+          seen.add(title);
+          out.push(`${title} — ${snippet.slice(0, snippetLen)}`);
+        }
+        break;
+      }
+      scope = scope.parent();
+    }
+    if (out.length >= max) break;
   }
-  return out.slice(0, max);
+  return out;
+}
+
+/** Title-only legacy reference list, restricted to explicit blog-host cards. */
+function grabCardTitles(html, max = 16) {
+  const $ = cheerio.load(String(html || ''));
+  const out = [];
+  const seen = new Set();
+  for (const headline of $(HEADLINE_SELECTOR).toArray()) {
+    const title = $(headline).text().replace(/\s+/g, ' ').trim();
+    const link = readAbsoluteHref($, headline);
+    if (!title || !link || !['blog.naver.com', 'm.blog.naver.com'].includes(link.parsed.hostname)) continue;
+    let card = $(headline).parent();
+    let validCard = false;
+    while (card.length && !card.is('body, html')) {
+      if (card.is(CARD_SELECTOR) && card.find(HEADLINE_SELECTOR).length === 1 && sourceUrlAllowed(link.parsed, 'blog-snippet')) {
+        validCard = !hasAdMarker($, card);
+        if (validCard) break;
+      }
+      card = card.parent();
+    }
+    if (!validCard || seen.has(title)) continue;
+    seen.add(title);
+    out.push(title);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 // 네이버 기사 링크(스포츠·연예·일반)에서 oid/aid + 종류를 뽑는 정규식.
@@ -73,16 +219,27 @@ const ARTICLE_LINK_RE = /https?:\/\/(?:m\.)?(sports|entertain|n)\.(?:news\.)?nav
 
 /** 검색결과 HTML → [{oid, aid, kind}] (중복 제거). kind = sports|entertain|news */
 function grabArticleRefs(html, max = 8) {
-  const re = new RegExp(ARTICLE_LINK_RE.source, 'gi'); // lastIndex 공유 방지 — 반드시 새 객체로
+  const $ = cheerio.load(String(html || ''));
   const seen = new Set();
   const items = [];
-  let m;
-  while ((m = re.exec(html)) && items.length < max) {
-    const kind = m[1] === 'sports' ? 'sports' : m[1] === 'entertain' ? 'entertain' : 'news';
-    const key = m[2] + '/' + m[3];
+  for (const anchor of $('a[href]').toArray()) {
+    if (items.length >= max) break;
+    const href = $(anchor).attr('href');
+    if (!href || !/^https?:\/\//i.test(href)) continue;
+    let parsed;
+    try { parsed = new URL(href); } catch (_) { continue; }
+    const hostname = parsed.hostname.toLowerCase();
+    const kind = hostname.endsWith('sports.naver.com') && (hostname === 'sports.naver.com' || hostname === 'm.sports.naver.com')
+      ? 'sports'
+      : hostname === 'entertain.naver.com' || hostname === 'm.entertain.naver.com'
+        ? 'entertain'
+        : hostname === 'n.news.naver.com' ? 'news' : null;
+    const match = parsed.pathname.match(/(?:^|\/)(?:mnews\/)?article\/(\d{2,4})\/(\d{6,})(?:\/|$)/i);
+    if (!kind || !match) continue;
+    const key = match[1] + '/' + match[2];
     if (seen.has(key)) continue;
     seen.add(key);
-    items.push({ oid: m[2], aid: m[3], kind });
+    items.push({ oid: match[1], aid: match[2], kind, url: href });
   }
   return items;
 }
@@ -115,6 +272,7 @@ const SERP_SECTION_RULES = [
 /** 통합검색 HTML에서 섹션 제목과 블로그 문서 참조만 관찰한다. */
 function parseSerpSections(html) {
   const source = String(html || '');
+  const $ = cheerio.load(source);
   const sections = [];
   const seenSections = new Set();
   const headingRe = /<h2\b[^>]*>([\s\S]*?)<\/h2>/gi;
@@ -138,11 +296,18 @@ function parseSerpSections(html) {
     blogRefs.push({ blogId, logNo, url: 'https://blog.naver.com/' + key });
   }
 
+  const placeLinks = /(?:pcmap\.)?place\.naver\.com|map\.naver\.com/i.test(source);
+  const kinLinks = /kin\.naver\.com\/qna/i.test(source);
+  const noResultText = $('.not_found02, #main_pack .no_result, #main_pack .not_found').toArray()
+    .map((element) => $(element).text()).join(' ');
+  const explicitNoResults = /검색\s*결과가\s*없습니다|검색결과가\s*없습니다|결과가\s*없습니다/.test(noResultText);
+  const resultKind = sections.length || blogRefs.length || placeLinks || kinLinks ? 'ok' : explicitNoResults ? 'no_results' : 'parser_mismatch';
   return {
     sections,
     blogRefs,
-    placeLinks: /(?:pcmap\.)?place\.naver\.com|map\.naver\.com/i.test(source),
-    kinLinks: /kin\.naver\.com\/qna/i.test(source),
+    placeLinks,
+    kinLinks,
+    resultKind,
   };
 }
 
@@ -171,7 +336,7 @@ const DISCOVER_DUMP = "(function(){var out=[];document.querySelectorAll('ol,ul')
 
 module.exports = {
   // A
-  SDS_TEXT_CLASS, decodeText, grabSds, grabTitleSnippetPairs,
+  SDS_TEXT_CLASS, decodeText, grabSds, parseSearchCards, grabTitleSnippetPairs, grabObservedTitleSnippetPairs, grabCardTitles, attachSourceMetadata,
   ARTICLE_LINK_RE, grabArticleRefs, ARTICLE_BODY_RE, ARTICLE_TITLE_RE, searchUrl,
   SERP_SECTION_RULES, parseSerpSections,
   // B

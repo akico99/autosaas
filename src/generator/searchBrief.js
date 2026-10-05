@@ -166,6 +166,230 @@ function countEvidence(value) {
   return Array.isArray(value) ? value.length : 0;
 }
 
+const MIN_ORIGINAL_TEXT_LENGTH = 40;
+
+function isValidHttpUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    const parsed = new URL(value.trim());
+    return ['http:', 'https:'].includes(parsed.protocol) && !!parsed.hostname
+      && !parsed.username && !parsed.password;
+  } catch (e) {
+    return false;
+  }
+}
+
+function meaningfulText(value) {
+  const text = String(value || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length >= MIN_ORIGINAL_TEXT_LENGTH && /[\p{L}\p{N}]/u.test(text);
+}
+
+function hasExplicitNonOriginalDescriptor(source) {
+  if (!source || typeof source !== 'object' || source.original === false) return true;
+  const labels = [source.sourceType, source.kind, source.type, source.contentKind]
+    .map((value) => String(value || '')).join(' ').toLowerCase();
+  return /snippet|summary|headline|brief|search|serp|excerpt/.test(labels);
+}
+
+function isValidUserSource(source) {
+  return !!(source && typeof source === 'object'
+    && !hasExplicitNonOriginalDescriptor(source)
+    && isValidHttpUrl(source.url) && meaningfulText(source.text)
+    && String(source.text).trim() !== String(source.title || '').trim());
+}
+
+function parsedHost(value) {
+  if (!isValidHttpUrl(value)) return '';
+  try { return new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, ''); } catch (e) { return ''; }
+}
+
+function isInstitutionHostname(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  return host === 'go.kr' || host.endsWith('.go.kr')
+    || host === 'korea.kr' || host.endsWith('.korea.kr')
+    || host === 'gov.kr' || host.endsWith('.gov.kr')
+    || host === 'gov' || host.endsWith('.gov');
+}
+
+function hasInstitutionProvenance(page) {
+  if (!page || typeof page !== 'object') return false;
+  const labels = [page.sourceType, page.kind, page.type].map((value) => String(value || '')).join(' ');
+  const identity = [page.publisher, page.institution, page.sourceName, page.title]
+    .some((value) => String(value || '').trim());
+  return identity && (page.official === true || page.verified === true
+    || /institution|government|official/i.test(labels));
+}
+
+function isInstitutionPage(page) {
+  if (!page || typeof page !== 'object' || hasExplicitNonOriginalDescriptor(page) || !isValidHttpUrl(page.url)) return false;
+  const text = page.text || page.body || page.content;
+  if (!meaningfulText(text) || String(text).trim() === String(page.title || '').trim()) return false;
+  const host = parsedHost(page.url);
+  if (isInstitutionHostname(host)) return true;
+  // .or.kr identifies an organization domain, not an official or verified publisher by itself.
+  if (host === 'or.kr' || host.endsWith('.or.kr')) return hasInstitutionProvenance(page);
+  return false;
+}
+
+function hasOriginalDescriptor(source) {
+  if (hasExplicitNonOriginalDescriptor(source)) return false;
+  const labels = [source && source.sourceType, source && source.kind, source && source.type, source && source.contentKind]
+    .map((value) => String(value || '')).join(' ').toLowerCase();
+  return source && source.original !== false
+    && (source.original === true || /article|institution|official|original|page-body|webpage/.test(labels));
+}
+
+function textOfSource(source) {
+  if (!source || typeof source !== 'object') return '';
+  return source.text || source.body || source.content || source.articleBody || source.pageText || '';
+}
+
+function mergeSourceRecords(items, fallbackType) {
+  if (!Array.isArray(items)) return [];
+  const sidecar = Array.isArray(items.sources) ? items.sources : [];
+  return items.map((item, index) => {
+    const metadata = (item && typeof item === 'object' && (item.source || item.provenance))
+      || sidecar[index] || {};
+    const value = item && typeof item === 'object' ? item : {};
+    return {
+      ...metadata,
+      ...value,
+      url: value.url || metadata.url || '',
+      title: value.title || metadata.title || '',
+      text: textOfSource(value) || textOfSource(metadata) || (typeof item === 'string' ? item : ''),
+      sourceType: value.sourceType || value.kind || value.type || metadata.sourceType || metadata.kind || metadata.type || fallbackType,
+      kind: value.kind || metadata.kind || '',
+      contentKind: value.contentKind || metadata.contentKind || '',
+      collectedAt: value.collectedAt || metadata.collectedAt || '',
+      publishedAt: value.publishedAt || metadata.publishedAt || '',
+    };
+  });
+}
+
+function isArticleBody(source) {
+  if (hasExplicitNonOriginalDescriptor(source)) return false;
+  const labels = [source && source.kind, source && source.contentKind, source && source.sourceType]
+    .map((value) => String(value || '')).join(' ').toLowerCase();
+  return /article-body|contentkind.?body|news-article|original-article/.test(labels)
+    && source.original !== false;
+}
+
+function collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources } = {}) {
+  const originals = [];
+  const seen = new Set();
+  const add = (item, sourceType, validator) => {
+    if (!item || !isValidHttpUrl(item.url) || !meaningfulText(textOfSource(item))) return;
+    if (validator && !validator(item)) return;
+    const key = `${sourceType}:${item.url.trim()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    originals.push({
+      url: item.url.trim(),
+      title: String(item.title || '').trim(),
+      text: textOfSource(item).trim(),
+      sourceType,
+      kind: String(item.kind || (sourceType === 'news-article' ? 'article-body' : sourceType)).trim(),
+      contentKind: String(item.contentKind || (sourceType === 'news-article' ? 'body' : 'body')).trim(),
+      original: true,
+      official: item.official === true,
+      verified: item.verified === true,
+      collectedAt: String(item.collectedAt || item.retrievedAt || '').trim(),
+      publishedAt: String(item.publishedAt || '').trim(),
+      publisher: String(item.publisher || item.institution || item.sourceName || '').trim(),
+      provenance: sourceType === 'institution-page'
+        ? (isInstitutionHostname(parsedHost(item.url)) ? 'institution-host' : 'explicit-institution-metadata')
+        : 'source-url',
+    });
+  };
+
+  if (isValidUserSource(source)) add({ ...source, sourceType: 'user-source' }, 'user-source');
+
+  const pages = officialFacts && Array.isArray(officialFacts.pages) ? officialFacts.pages : [];
+  pages.forEach((page) => {
+    if (isInstitutionPage(page)) add(page, 'institution-page', isInstitutionPage);
+  });
+
+  mergeSourceRecords(newsArticles, 'news-article').forEach((article) => {
+    // newsArticles are full article bodies; their source URL may arrive on the sidecar metadata.
+    const body = textOfSource(article);
+    if (isArticleBody(article) && meaningfulText(body) && isValidHttpUrl(article.url)
+      && String(body).trim() !== String(article.title || '').trim()) {
+      add(article, 'news-article');
+    }
+  });
+
+  const keywordRecords = [
+    ...mergeSourceRecords(keywordFacts, 'search-snippet').filter((item) => item !== null),
+    ...(Array.isArray(keywordSources) ? keywordSources : []),
+  ];
+  keywordRecords.forEach((item) => {
+    if (!item || !hasOriginalDescriptor(item)) return;
+    const sourceType = /institution|government|official/i.test(`${item.sourceType || ''} ${item.kind || ''} ${item.type || ''}`)
+      ? 'institution-page'
+      : (isArticleBody(item) ? 'news-article' : '');
+    if (!sourceType) return;
+    if (sourceType === 'institution-page') {
+      if (isInstitutionPage(item)) add(item, sourceType, isInstitutionPage);
+    } else {
+      add(item, sourceType);
+    }
+  });
+
+  return originals;
+}
+
+function collectSourceMetadata(input = {}) {
+  const originals = collectOriginalSources(input);
+  const candidates = [];
+  if (input.source && typeof input.source === 'object') candidates.push({ sourceType: 'user-source', ...input.source });
+  if (input.officialFacts && Array.isArray(input.officialFacts.pages)) {
+    candidates.push(...input.officialFacts.pages.map((page) => page && typeof page === 'object' ? {
+      ...page,
+      sourceType: page.sourceType || page.kind || page.type || 'institution-page',
+    } : page));
+  }
+  candidates.push(...mergeSourceRecords(input.newsArticles, 'news-article'));
+  candidates.push(...mergeSourceRecords(input.keywordFacts, 'search-snippet'));
+  if (Array.isArray(input.keywordSources)) candidates.push(...input.keywordSources);
+
+  const seen = new Set();
+  return candidates.filter((item) => item && isValidHttpUrl(item.url)).flatMap((item) => {
+    const url = item.url.trim();
+    const sourceType = String(item.sourceType || item.kind || item.type || '').trim();
+    const kind = String(item.kind || '').trim();
+    const contentKind = String(item.contentKind || '').trim();
+    const key = `${url}\n${sourceType}\n${kind}\n${contentKind}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{
+      url,
+      title: String(item.title || '').trim(),
+      sourceType,
+      kind,
+      contentKind,
+      collectedAt: String(item.collectedAt || item.retrievedAt || '').trim(),
+      publishedAt: String(item.publishedAt || '').trim(),
+      original: originals.some((original) => original.url === url
+        && (original.sourceType === 'user-source'
+          ? isValidUserSource(item)
+          : original.sourceType === 'institution-page'
+            ? isInstitutionPage(item)
+            : isArticleBody(item) && meaningfulText(textOfSource(item)))),
+    }];
+  });
+}
+
+function hasOfficialEvidence(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.pages)) return false;
+  return value.pages.some(isInstitutionPage);
+}
+
+function hasRelevantOriginal(intent, originalSources, experienceInput) {
+  if (intent === 'experience') return experienceInput;
+  if (intent === 'news') return originalSources.some((source) => ['user-source', 'institution-page', 'news-article'].includes(source.sourceType));
+  return originalSources.length > 0 || experienceInput;
+}
+
 function sectionForIntent(serp, intent, fallback) {
   const sections = Array.isArray(serp && serp.sections) ? serp.sections : [];
   const rules = {
@@ -229,21 +453,25 @@ function calibrateIntentWithSerp(classified, serp) {
   };
 }
 
-function hasOfficialEvidence(value) {
-  if (!value || typeof value !== 'object') return false;
-  return !!(String(value.brief || '').trim() || (Array.isArray(value.pages) && value.pages.length));
-}
-
 function buildSearchBrief({
   keyword, topic, review, source, memo, paid, style, autocomplete,
-  newsArticles, keywordFacts, officialFacts, placeReviews, searchBlocked, serp,
+  newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews, searchBlocked, serp,
 } = {}) {
+  const originalSources = collectOriginalSources({ source, newsArticles, keywordFacts, keywordSources, officialFacts });
+  const newsOriginals = originalSources.filter((item) => item.sourceType === 'news-article').length;
+  const institutionOriginals = originalSources.filter((item) => item.sourceType === 'institution-page').length;
+  const userOriginals = originalSources.filter((item) => item.sourceType === 'user-source').length;
+  const experienceInput = hasExperienceInput({ review, paid, memo });
   const evidence = {
     news: countEvidence(newsArticles),
     facts: countEvidence(keywordFacts),
-    official: hasOfficialEvidence(officialFacts),
+    official: institutionOriginals > 0,
+    originals: originalSources.length,
+    newsOriginals,
+    institutionOriginals,
+    userOriginals,
     reviews: countEvidence(placeReviews),
-    experienceInput: hasExperienceInput({ review, paid, memo }),
+    experienceInput,
     searchBlocked: searchBlocked === true,
   };
   const baseClassified = classifyIntent({
@@ -258,9 +486,14 @@ function buildSearchBrief({
   const preHoldReasons = [];
   const warnings = [...calibration.warnings];
 
-  if (evidence.searchBlocked) preHoldReasons.push('네이버 검색 제한으로 근거 자료를 가져오지 못함');
+  if (evidence.searchBlocked) {
+    warnings.push('네이버 검색 제한 — 제공된 원문·경험 자료의 충족 여부를 확인하세요');
+    if (!hasRelevantOriginal(intent, originalSources, experienceInput)) {
+      preHoldReasons.push('네이버 검색 제한으로 근거 자료를 가져오지 못함');
+    }
+  }
 
-  if (intent === 'news' && evidence.news === 0 && evidence.facts === 0 && !hasLinkSource(source)) {
+  if (intent === 'news' && newsOriginals === 0 && userOriginals === 0 && institutionOriginals === 0) {
     preHoldReasons.push('최신 이슈 글인데 확인한 기사·뉴스 자료가 없음');
   }
   if (intent === 'experience' && !evidence.experienceInput) {
@@ -296,5 +529,14 @@ module.exports = {
   buildSearchBrief,
   filterAutocomplete,
   hasExperienceInput,
+  isValidHttpUrl,
+  meaningfulText,
+  isValidUserSource,
+  isInstitutionHostname,
+  isInstitutionPage,
+  isArticleBody,
+  hasOfficialEvidence,
+  collectOriginalSources,
+  collectSourceMetadata,
   STANDARD_VERSION,
 };

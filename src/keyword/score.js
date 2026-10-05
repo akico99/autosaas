@@ -61,23 +61,36 @@ function safetyScore(keyword, related) {
 
 /**
  * 씨앗 후보 하나를 점수화.
- * @param {object} c { keyword, volume, risePct, time, related, gap, typeFit, type }
- *   - gap: competition.fetchBlogGap()의 결과(0~100). 없으면 60(중립).
+ * @param {object} c { keyword, volume, risePct, time, related, gap, measured, typeFit, type }
+ *   - gap: competition.fetchBlogGap()의 measured result. 없으면 내부 계산에만 60(중립)을 사용.
  *   - typeFit: 요청 유형 정합 0~100(없으면 60).
- * @returns {{score:number, components:object}}
+ * @returns {{score:number, measured:boolean, components:object}}
  */
 function scoreCandidate(c = {}) {
   const value = strengthFromVolume(c.volume);
   const mom = momentum(c.risePct, c.time);
-  const gap = c.gap == null ? 60 : clamp(c.gap);
+  const gapMeasured = Number.isFinite(c.gap) && c.measured !== false;
+  const gapValue = gapMeasured ? clamp(c.gap) : 60;
   const local = localScore(c.keyword, c.related, c.type);
   const safety = safetyScore(c.keyword, c.related);
   const typeFit = c.typeFit == null ? 60 : clamp(c.typeFit);
 
   const score = clamp(
-    gap * 0.28 + value * 0.24 + mom * 0.18 + local * 0.12 + safety * 0.08 + typeFit * 0.10,
+    gapValue * 0.28 + value * 0.24 + mom * 0.18 + local * 0.12 + safety * 0.08 + typeFit * 0.10,
   );
-  return { score, components: { gap, value, momentum: mom, local, safety, typeFit } };
+  return {
+    score,
+    measured: gapMeasured,
+    components: {
+      gap: gapMeasured ? gapValue : null,
+      gapMeasured,
+      value,
+      momentum: mom,
+      local,
+      safety,
+      typeFit,
+    },
+  };
 }
 
 module.exports = { scoreCandidate, strengthFromVolume, momentum, isRegion, clamp };

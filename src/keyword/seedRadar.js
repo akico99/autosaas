@@ -17,7 +17,10 @@ function norm(s) { return String(s || '').replace(/\s+/g, '').replace(/[^가-힣
  * @param {object} [opts] { type, gapProbe=25, limit=15 }
  * @returns {Promise<Array>} 점수순 정렬된 후보(각 {..., gap, score, components})
  */
-async function rankSeeds(candidates, { type, gapProbe = 25, limit = 15 } = {}) {
+async function rankSeeds(
+  candidates,
+  { type, gapProbe = 25, limit = 15, fetchBlogGap: gapFetcher = fetchBlogGap } = {},
+) {
   // 중복 제거
   const seen = new Set();
   const uniq = [];
@@ -30,7 +33,7 @@ async function rankSeeds(candidates, { type, gapProbe = 25, limit = 15 } = {}) {
 
   // 1) 빈틈 없이 예비 점수 → 상위만 빈틈 조회(비용 절약)
   const prelim = uniq
-    .map((c) => ({ c, s: scoreCandidate({ ...c, type, gap: 60 }).score }))
+    .map((c) => ({ c, s: scoreCandidate({ ...c, type, gap: null, measured: false }).score }))
     .sort((a, b) => b.s - a.s)
     .slice(0, gapProbe)
     .map((x) => x.c);
@@ -38,10 +41,26 @@ async function rankSeeds(candidates, { type, gapProbe = 25, limit = 15 } = {}) {
   // 2) 상위에만 실시간 빈틈 → 최종 점수
   const scored = await Promise.all(
     prelim.map(async (c) => {
-      let gap = 60, gapInfo = null;
-      try { gapInfo = await fetchBlogGap(c.keyword); gap = gapInfo.gap; } catch (e) {}
-      const r = scoreCandidate({ ...c, type, gap });
-      return { ...c, gap, gapInfo, score: r.score, components: r.components };
+      let gapInfo;
+      try {
+        gapInfo = await gapFetcher(c.keyword);
+      } catch (e) {
+        gapInfo = { measured: false, gap: null, perDay: null, count: null, spanHours: null, reason: 'fetch_failed' };
+      }
+      const measured = gapInfo?.measured === true
+        ? Number.isFinite(gapInfo.gap)
+        : gapInfo?.measured == null && Number.isFinite(gapInfo?.gap);
+      const gap = measured ? gapInfo.gap : null;
+      const r = scoreCandidate({ ...c, type, gap, measured });
+      return {
+        ...c,
+        gap,
+        measured: r.measured,
+        reason: measured ? null : gapInfo?.reason || 'fetch_failed',
+        gapInfo: { ...gapInfo, measured: r.measured, gap },
+        score: r.score,
+        components: r.components,
+      };
     }),
   );
   scored.sort((a, b) => b.score - a.score);

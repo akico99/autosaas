@@ -55,6 +55,13 @@ test('buildSearchBrief holds unsupported experience and news drafts', () => {
 
   const news = buildSearchBrief({ keyword: '오늘 이슈', topic: 'broadcast' });
   assert.ok(news.preHoldReasons.includes('최신 이슈 글인데 확인한 기사·뉴스 자료가 없음'));
+
+  const headlinesOnly = buildSearchBrief({
+    keyword: '오늘 이슈', topic: 'broadcast', searchBlocked: true,
+    keywordFacts: ['오늘 이슈 관련 검색 결과 제목과 짧은 요약'],
+    newsArticles: [{ title: '오늘 이슈', body: '검색 화면에서 확인한 발췌문입니다.'.repeat(8) }],
+  });
+  assert.ok(headlinesOnly.preHoldReasons.includes('최신 이슈 글인데 확인한 기사·뉴스 자료가 없음'));
 });
 
 test('validateSearchPost rejects an unrelated title even when the body is long and structured', () => {

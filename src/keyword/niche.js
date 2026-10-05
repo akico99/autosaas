@@ -22,11 +22,20 @@ const INTENT_MODIFIERS = [
  * @param {object} [opts] { type, limit=5, probe=15 }
  * @returns {Promise<Array<{keyword, gap, perDay, score}>>} 점수순
  */
-async function findNicheAngles(mainKeyword, { type, limit = 5, probe = 15 } = {}) {
+async function findNicheAngles(
+  mainKeyword,
+  {
+    type,
+    limit = 5,
+    probe = 15,
+    fetchAutocomplete: autocompleteFetcher = fetchAutocomplete,
+    fetchBlogGap: gapFetcher = fetchBlogGap,
+  } = {},
+) {
   if (!mainKeyword) return [];
   // 1) 세부 후보 = 자동완성 롱테일 + (메인 + 인텐트) 조합
   let ac = [];
-  try { ac = await fetchAutocomplete(mainKeyword); } catch (e) { ac = []; }
+  try { ac = await autocompleteFetcher(mainKeyword); } catch (e) { ac = []; }
   const combos = INTENT_MODIFIERS.map((m) => `${mainKeyword} ${m}`);
   const cands = [...new Set([...(ac || []), ...combos])]
     .filter((k) => k && k !== mainKeyword && k.length <= 25);
@@ -35,10 +44,28 @@ async function findNicheAngles(mainKeyword, { type, limit = 5, probe = 15 } = {}
   const picked = cands.slice(0, probe);
   const scored = await Promise.all(
     picked.map(async (k) => {
-      let gap = 60, perDay = null;
-      try { const g = await fetchBlogGap(k); gap = g.gap; perDay = g.perDay; } catch (e) {}
-      const s = scoreCandidate({ keyword: k, volume: 3000, risePct: 300, time: '', gap, type });
-      return { keyword: k, gap, perDay, score: s.score };
+      let gapInfo;
+      try {
+        gapInfo = await gapFetcher(k);
+      } catch (e) {
+        gapInfo = { measured: false, gap: null, perDay: null, count: null, spanHours: null, reason: 'fetch_failed' };
+      }
+      const measured = gapInfo?.measured === true
+        ? Number.isFinite(gapInfo.gap)
+        : gapInfo?.measured == null && Number.isFinite(gapInfo?.gap);
+      const gap = measured ? gapInfo.gap : null;
+      const s = scoreCandidate({ keyword: k, volume: 3000, risePct: 300, time: '', gap, measured, type });
+      return {
+        keyword: k,
+        gap,
+        perDay: gapInfo?.perDay ?? null,
+        score: s.score,
+        measured: s.measured,
+        reason: measured ? null : gapInfo?.reason || 'fetch_failed',
+        count: gapInfo?.count ?? null,
+        spanHours: gapInfo?.spanHours ?? null,
+        components: s.components,
+      };
     }),
   );
   scored.sort((a, b) => b.score - a.score);

@@ -5,6 +5,7 @@
 //   이후 여기에 생성기(generatePost/generateSearchPost)·네이버 편집기 webview 등을 붙인다.
 
 const { app, BrowserWindow, ipcMain, dialog, session, clipboard, webContents, shell, nativeImage, powerSaveBlocker } = require('electron');
+const { createRenderedCollector } = require('./renderedCollector');
 
 // ★#8 방송 캡쳐 "하단" 워터마크 크롭 — 방송사 자막·로고 워터마크는 대부분 화면 "아래쪽 띠"에 있음(실무자 확인).
 //   이미지 아래쪽 pct(기본 13%)만큼을 잘라내 워터마크를 제거한다. Electron 내장 nativeImage(추가 설치 0).
@@ -44,7 +45,7 @@ const M = require('../src/scrape/markup');
 // ★수집 자가진단 — "조용한 0건"(구조 변경)을 생성 결과에 실어 보낸다.
 const scrapeHealth = require('../src/scrape/health');
 const { createEntry, matchPublished, linkManually, dueChecks, findRank, addCheck, summarize } = require('../src/performance/tracker');
-const { guardedSearchFetch, runGuardedSearch, isSearchBlocked, getBlockState, NaverSearchBlockedError } = require('../src/scrape/naverSearchGuard');
+const { guardedSearchFetch, runGuardedSearch, isSearchBlocked, getBlockState, NaverSearchBlockedError, setStorageDir } = require('../src/scrape/naverSearchGuard');
 const { observeSerp } = require('../src/keyword/serpObserve');
 
 function readSearchPerformance() {
@@ -177,69 +178,107 @@ let keepSession = true;
 
 // ★엔터/스포츠 랭킹 = JS 렌더 페이지 → 숨은 창으로 렌더 후 DOM 긁기(네이버 세션 사용).
 //   페이지 하나 로드 → JS 실행 → 결과 반환 → 창 폐기.
-async function scrapeRendered(url, extractJs, waitMs = 3500, partition = 'persist:naver', ua) {
-  const win = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      partition,
-      offscreen: false,
-      backgroundThrottling: false,
-    },
-  });
-  try {
-    await win.loadURL(url, {
-      userAgent: ua || 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
-    });
-    await new Promise((r) => setTimeout(r, waitMs));
-    return await win.webContents.executeJavaScript(extractJs);
-  } catch (e) {
-    return { error: e.message };
-  } finally {
-    try { win.destroy(); } catch (e) {}
-  }
-}
+const scrapeRendered = createRenderedCollector({ BrowserWindow });
 
 // ★★공식 사실 수집 = "네이버 AI브리핑 요약 + 정부/기관 페이지 본문"을 JS 렌더링으로 읽는다(주력 근거).
 //   블로그는 부실할 수 있어 보조로만 → 이건 공식/정확 출처. (부평구청 복지ON 같은 .go.kr 페이지 실제 내용)
 const _DESKTOP_UA_OF = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+function isInstitutionCandidateUrl(value) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol !== 'https:' || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
+    const inDomain = (domain) => host === domain || host.endsWith('.' + domain);
+    return ['go.kr', 'korea.kr', 'bokjiro.go.kr', 'or.kr'].some(inDomain);
+  } catch (e) { return false; }
+}
+function isGovernmentSourceUrl(value) {
+  try {
+    const host = new URL(String(value)).hostname.toLowerCase();
+    return ['go.kr', 'korea.kr'].some((domain) => host === domain || host.endsWith('.' + domain));
+  } catch (e) { return false; }
+}
 async function fetchOfficialFacts(keyword) {
   const kw = String(keyword || '').trim();
-  if (!kw) return { brief: '', pages: [] };
+  if (!kw) return { brief: '', pages: [], urls: [], collectedAt: null };
   // 1) 통합검색 렌더 → AI브리핑/상단 요약 텍스트 + 정부·기관 링크
   const searchUrl = 'https://search.naver.com/search.naver?query=' + encodeURIComponent(kw);
   const SEARCH_EXTRACT = "(function(){var out={brief:'',urls:[]};try{out.blocked=!!((document.body&&document.body.innerText)||'').includes('검색 서비스 이용이 제한되었습니다');function T(e){return (e&&e.innerText||'').replace(/\\s+/g,' ').trim();}"
     + "var sel=['.api_subject_bx','.sc_new','[class*=brief]','[class*=answer]','[class*=summary]','.main_pack .total_wrap','#main_pack'];"
     + "var chunks=[],seen1={};for(var i=0;i<sel.length;i++){var els=document.querySelectorAll(sel[i]);for(var j=0;j<els.length;j++){var t=T(els[j]);if(t.length>90&&!seen1[t.slice(0,40)]){seen1[t.slice(0,40)]=1;chunks.push(t);}if(chunks.length>=6)break;}if(chunks.length>=6)break;}"
     + "out.brief=chunks.join(' | ').slice(0,3500);if(out.brief.length<120){out.brief=T(document.querySelector('#main_pack')||document.body).slice(0,3000);}"
-    + "var seen={};var as=document.querySelectorAll('a');for(var k=0;k<as.length;k++){var h=as[k].href||'';if(/(\\.go\\.kr|korea\\.kr|bokjiro|\\.or\\.kr)/.test(h)&&!/search\\.naver|help\\.naver|nid\\.naver|\\/\\/(www\\.)?naver\\.com/.test(h)&&!seen[h]){seen[h]=1;out.urls.push(h.split('#')[0]);}if(out.urls.length>=4)break;}"
+    + "function official(u){try{var p=new URL(u),h=p.hostname.toLowerCase();function d(x){return h===x||h.endsWith('.'+x);}return p.protocol==='https:'&&!p.username&&!p.password&&(d('go.kr')||d('korea.kr')||d('bokjiro.go.kr')||d('or.kr'));}catch(e){return false;}}"
+    + "var seen={};var as=document.querySelectorAll('a');for(var k=0;k<as.length;k++){var h=as[k].href||'';if(official(h)&&!seen[h]){seen[h]=1;out.urls.push(h.split('#')[0]);}if(out.urls.length>=4)break;}"
     + "}catch(e){}return JSON.stringify(out);})()";
-  let brief = '', urls = [];
+  const SEARCH_READY = "(function(){var e=document.querySelector('#main_pack,.api_subject_bx,.sc_new');var t=(e&&e.innerText||'').replace(/\\s+/g,' ').trim();return !!e&&(t.length>=80||/검색\\s*결과가\\s*없습니다/.test(t));})()";
+  let brief = '', urls = [], searchCollectedAt = null;
   try {
     const response = await runGuardedSearch('rendered:' + searchUrl, async () => {
-      const r = await scrapeRendered(searchUrl, SEARCH_EXTRACT, 4200, 'persist:naver-search', _DESKTOP_UA_OF);
+      const r = await scrapeRendered(searchUrl, SEARCH_EXTRACT, 0, 'persist:naver-search', _DESKTOP_UA_OF, { readyScript: SEARCH_READY, timeoutMs: 12000 });
+      if (r && r.error) {
+        const status = Number(r.status) || undefined;
+        const kind = r.kind || (status === 429 ? 'rate_limited' : status === 403 ? 'blocked' : 'load_error');
+        throw Object.assign(new Error(r.error), { kind, status, code: r.code || (status === 429 ? 'NAVER_SEARCH_RATE_LIMITED' : status === 403 ? 'NAVER_SEARCH_BLOCKED' : 'RENDER_LOAD_ERROR') });
+      }
       const j = typeof r === 'string' ? JSON.parse(r) : (r || {});
-      return { status: j.blocked ? 403 : 200, body: j.blocked ? '검색 서비스 이용이 제한되었습니다' : JSON.stringify(j) };
+      const status = Number(j.status) || (j.blocked ? 403 : 200);
+      return { status, body: j.blocked ? '검색 서비스 이용이 제한되었습니다' : JSON.stringify(j) };
     });
-    const j = JSON.parse(response.body);
+    const j = JSON.parse(response.body.toString('utf8'));
     brief = (j && j.brief) || ''; urls = (j && Array.isArray(j.urls) ? j.urls : []);
+    searchCollectedAt = response.collectedAt || null;
   } catch (e) {
-    if (e instanceof NaverSearchBlockedError || e && e.code === 'NAVER_SEARCH_BLOCKED') return { brief: '', pages: [] };
+    const blocked = e instanceof NaverSearchBlockedError || e && (
+      e.code === 'NAVER_SEARCH_BLOCKED' || e.code === 'NAVER_SEARCH_RATE_LIMITED'
+        || e.kind === 'blocked' || e.kind === 'rate_limited'
+    );
+    const errorKind = e && e.kind || (blocked ? 'blocked' : 'render_error');
+    const status = Number(e && e.status) || undefined;
+    scrapeHealth.record('official-facts', 0, { query: kw, blocked, status, errorKind, errorCode: e && e.code || '', resultKind: 'error' });
+    return {
+      brief: '', pages: [], urls: [], collectedAt: null,
+      error: { kind: errorKind, status: status || null, code: e && e.code || '', message: e && e.message || '공식 출처 검색에 실패했습니다.' },
+    };
   }
   // 2) 상위 정부/기관 페이지 1~2개 렌더 → 본문 텍스트(자격·금액·사용처·신청)
   const pages = [];
-  const PAGE_EXTRACT = "(function(){try{var m=document.querySelector('#content')||document.querySelector('#container')||document.querySelector('.contents')||document.querySelector('main')||document.querySelector('[role=main]')||document.body;var t=(m.innerText||'').replace(/\\s+/g,' ').trim();return t.slice(0,2600);}catch(e){return '';}})()";
+  const PAGE_EXTRACT = "(function(){try{var m=document.querySelector('#content')||document.querySelector('#container')||document.querySelector('.contents')||document.querySelector('main')||document.querySelector('[role=main]')||document.body;var t=(m.innerText||'').replace(/\\s+/g,' ').trim();return JSON.stringify({url:location.href,title:document.title||'',text:t.slice(0,2600)});}catch(e){return JSON.stringify({error:String(e)});}})()";
+  const PAGE_READY = "(function(){var m=document.querySelector('#content')||document.querySelector('#container')||document.querySelector('.contents')||document.querySelector('main')||document.querySelector('[role=main]');if(!m)return false;var t=(m.innerText||'').replace(/\\s+/g,' ').trim();var blocks=m.querySelectorAll('p,li,td,dd,article,[itemprop=articleBody]');var meaningful=false;for(var i=0;i<blocks.length;i++){if((blocks[i].innerText||blocks[i].textContent||'').replace(/\\s+/g,' ').trim().length>=48){meaningful=true;break;}}return t.length>=120&&meaningful;})()";
   // ★다운로드 파일(.hwp·pdf·문서·zip)이나 /download 링크는 열지 않는다 — 저장 대화상자가 떠서 앱이 멈춘다(법무부 .hwp 등). (홈판·검색 공통 안전 필터)
   const _isDownloadUrl = (u) => /\.(hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip|egg|al[zx]|tar|gz)(\?|#|$)/i.test(u || '') || /[/?&](download|filedown|fileDownload|down)\b/i.test(u || '');
-  urls = (Array.isArray(urls) ? urls : []).filter((u) => !_isDownloadUrl(u));
+  urls = (Array.isArray(urls) ? urls : []).filter((u) => isInstitutionCandidateUrl(u) && !_isDownloadUrl(u));
+  const pageErrors = [];
   for (const u of urls.slice(0, 2)) {
     if (_isDownloadUrl(u)) continue;
     try {
-      const t = await scrapeRendered(u, PAGE_EXTRACT, 3500, 'persist:naver', _DESKTOP_UA_OF);
-      const txt = typeof t === 'string' ? t : '';
-      if (txt && txt.length > 120) pages.push({ url: u, text: txt.slice(0, 2600) });
-    } catch (e) {}
+      const result = await scrapeRendered(u, PAGE_EXTRACT, 0, 'persist:naver', _DESKTOP_UA_OF, { readyScript: PAGE_READY, timeoutMs: 12000 });
+      if (result && result.error) throw Object.assign(new Error(result.error), { kind: result.kind || 'parse_error', status: result.status, code: result.code });
+      let parsed;
+      try { parsed = typeof result === 'string' ? JSON.parse(result) : result; } catch (e) { parsed = { title: '', text: String(result || '') }; }
+      if (parsed && parsed.error) throw Object.assign(new Error(parsed.error), { kind: 'parse_error', code: 'OFFICIAL_PAGE_EXTRACTION_FAILED' });
+      const text = String(parsed && parsed.text || '').replace(/\s+/g, ' ').trim();
+      const pageUrl = String(parsed && parsed.url || u);
+      if (!isInstitutionCandidateUrl(pageUrl)) throw Object.assign(new Error('기관 검색 결과와 실제 페이지 주소가 일치하지 않습니다.'), { kind: 'provenance_mismatch', code: 'OFFICIAL_PAGE_URL_MISMATCH' });
+      if (text.length >= 120) pages.push({
+        url: pageUrl, title: String(parsed.title || ''), text: text.slice(0, 2600), collectedAt: new Date().toISOString(),
+        sourceType: isGovernmentSourceUrl(pageUrl) ? 'institution-page' : 'page-body',
+        kind: isGovernmentSourceUrl(pageUrl) ? 'article-body' : 'page-body', contentKind: 'body', provenance: 'rendered-page',
+      });
+      else pageErrors.push({ kind: 'parser_mismatch', status: null, code: 'OFFICIAL_PAGE_BODY_MISSING' });
+    } catch (e) {
+      pageErrors.push({ kind: e && e.kind || 'load_error', status: Number(e && e.status) || null, code: e && e.code || '' });
+    }
   }
-  return { brief, pages, urls }; // ★urls = AI브리핑이 인용한 공식(정부·기관) 출처 → 이미지 소싱 최우선에 사용
+  const pageError = pages.length ? null : pageErrors[0] || null;
+  const resultKind = pages.length ? 'ok' : urls.length ? 'parser_mismatch' : 'empty';
+  scrapeHealth.record('official-facts', pages.length, {
+    query: kw, resultKind,
+    ...(pageError ? { errorKind: pageError.kind, status: pageError.status, errorCode: pageError.code } : {}),
+  });
+  return {
+    brief, pages, urls, collectedAt: searchCollectedAt,
+    ...(pageError ? { error: { ...pageError, message: '기관 페이지 본문을 확인하지 못했습니다.' } } : {}),
+  }; // urls는 이미지 후보 발견 경로이며 원문 근거와 구분한다.
 }
 
 // ★한 글당 "글쓰기" 토큰 사용량을 token-usage.log에 기록 → 5시간에 몇 개 가능한지 실측용. (모델=Opus/Sonnet 확인 포함)
@@ -645,6 +684,7 @@ app.whenReady().then(async () => {
   // ★독/작업표시줄 아이콘을 우리 로고로(프리스틴 Electron을 그대로 쓰므로 런타임에 지정).
   try { if (process.platform === 'darwin' && app.dock) app.dock.setIcon(path.join(__dirname, '..', 'build', 'icon-rounded.png')); } catch (e) {}
   try { setBgCacheDir(app.getPath('userData')); } catch (e) {} // 인물 배경 캐시를 사용자 영역에 영속화
+  try { setStorageDir(app.getPath('userData')); } catch (e) {} // 공개 검색 캐시와 제한 유예를 앱 프로필에 영속화
   APP_PORT = await startServer(); // 로컬 http 서버 먼저 띄우기
   // ★예약 자동 생성은 "그 시각에 컴퓨터가 켜져 있어야" 실행됨(잠자면 launchd/schtasks가 못 뜬다).
   //   → 앱이 켜져 있는 동안 "시스템 잠자기 방지"(화면은 꺼져도 됨, 배터리 영향 최소). 앱 끄면 자동 해제.

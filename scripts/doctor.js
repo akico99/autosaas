@@ -12,54 +12,34 @@ const expand = require('../src/keyword/expand');
 const health = require('../src/scrape/health');
 const { isSearchBlocked, getBlockState } = require('../src/scrape/naverSearchGuard');
 const { observeSerp } = require('../src/keyword/serpObserve');
+const { runChecks } = require('./doctorChecks');
 
 const KW_PERSON = process.argv[2] || '손흥민';   // 인물·뉴스가 확실히 있는 키워드
 const KW_PLACE = process.argv[3] || '성심당';    // 후기가 확실히 있는 장소
 const KW_TOPIC = process.argv[4] || '청년도약계좌'; // 블로그 정보가 확실히 있는 주제
 
 const checks = [
-  ['news-headlines', '뉴스 검색(제목+요약)', () => trends.fetchNewsHeadlines(KW_PERSON), 3],
-  ['news-articles', '뉴스 기사 본문', () => trends.fetchNewsArticles(KW_PERSON, { limit: 2 }), 1],
-  ['top-titles', '상위 제목 참고', () => trends.fetchTopTitles(KW_PLACE), 3],
-  ['place-reviews', '장소·제품 후기', () => trends.fetchPlaceReviews(KW_PLACE), 3],
-  ['blog-facts', '블로그 검색(참고)', () => trends.fetchBlogFacts(KW_TOPIC), 3],
-  ['serp', '통합검색 결과 관찰', () => observeSerp(KW_TOPIC), 3],
-  ['autocomplete', '네이버 자동완성', () => expand.fetchAutocomplete(KW_PLACE), 3],
-  ['realtime-trends', '실시간 트렌드(통합)', () => trends.fetchRealtimeTrends(), 5],
+  { id: 'news-headlines', label: '뉴스 검색(제목+요약)', run: () => trends.fetchNewsHeadlines(KW_PERSON), min: 3, requiresSearchGuard: true },
+  { id: 'news-articles', label: '뉴스 기사 본문', run: () => trends.fetchNewsArticles(KW_PERSON, { limit: 2 }), min: 1, requiresSearchGuard: true },
+  { id: 'top-titles', label: '상위 제목 참고', run: () => trends.fetchTopTitles(KW_PLACE), min: 3, requiresSearchGuard: true },
+  { id: 'place-reviews', label: '장소·제품 후기', run: () => trends.fetchPlaceReviews(KW_PLACE), min: 3, requiresSearchGuard: true },
+  { id: 'blog-facts', label: '블로그 검색(참고)', run: () => trends.fetchBlogFacts(KW_TOPIC), min: 3, requiresSearchGuard: true },
+  { id: 'serp', label: '통합검색 결과 관찰', run: () => observeSerp(KW_TOPIC), min: 3, requiresSearchGuard: true },
+  { id: 'autocomplete', label: '네이버 자동완성', run: () => expand.fetchAutocomplete(KW_PLACE), min: 3 },
+  { id: 'realtime-trends', label: '실시간 트렌드(통합)', run: () => trends.fetchRealtimeTrends(), min: 5 },
 ];
-
-function sample(v) {
-  if (v && !Array.isArray(v) && Array.isArray(v.sections)) return String(v.sections[0] || '');
-  if (!Array.isArray(v) || !v.length) return '';
-  const first = v[0];
-  const t = typeof first === 'string' ? first : (first.title || first.keyword || JSON.stringify(first));
-  return String(t).replace(/\s+/g, ' ').slice(0, 52);
-}
 
 (async () => {
   console.log(`수집 건강검진 — 키워드: "${KW_PERSON}" / "${KW_PLACE}" / "${KW_TOPIC}"\n`);
-  const rows = [];
-  for (const [id, label, fn, min] of checks) {
-    const t0 = Date.now();
-    if (isSearchBlocked()) {
-      rows.push({ id, label, n: 0, state: 'BLOCKED', ms: Date.now() - t0, err: getBlockState().message, sample: '' });
-      continue;
-    }
-    let v = [], err = '';
-    try { v = await fn(); } catch (e) { err = e.message; }
-    const n = Array.isArray(v) ? v.length : (v && v.measured && Array.isArray(v.sections) ? v.sections.length : 0);
-    const healthState = health.snapshot()[id] || {};
-    const state = err ? 'ERROR' : n === 0 && (healthState.blocked || (v && v.blocked)) ? 'BLOCKED' : n === 0 ? 'FAIL' : n < min ? 'WARN' : 'OK';
-    rows.push({ id, label, n, state, ms: Date.now() - t0, err, sample: sample(v) });
-  }
+  const rows = await runChecks(checks, { isSearchBlocked, getBlockState, healthSnapshot: health.snapshot });
   const pad = (s, w) => String(s) + ' '.repeat(Math.max(0, w - [...String(s)].reduce((a, c) => a + (c.charCodeAt(0) > 0x2000 ? 2 : 1), 0)));
   console.log(pad('소스', 24) + pad('상태', 8) + pad('건수', 6) + pad('시간', 8) + '예시');
   console.log('-'.repeat(96));
   for (const r of rows) {
-    const mark = { OK: '✓', WARN: '△', FAIL: '✗', ERROR: '✗', BLOCKED: '🚫' }[r.state];
+    const mark = { OK: '✓', WARN: '△', EMPTY: '○', PARSER_MISMATCH: '✗', FAIL: '✗', ERROR: '✗', BLOCKED: '🚫' }[r.state];
     console.log(pad(r.label, 24) + pad(mark + ' ' + r.state, 8) + pad(r.n, 6) + pad(r.ms + 'ms', 8) + (r.err || r.sample));
   }
-  const bad = rows.filter((r) => r.state === 'FAIL' || r.state === 'ERROR');
+  const bad = rows.filter((r) => r.state === 'FAIL' || r.state === 'ERROR' || r.state === 'PARSER_MISMATCH');
   const blocked = rows.filter((r) => r.state === 'BLOCKED');
   if (bad.length) {
     console.log('\n깨진 것으로 보이는 소스:');

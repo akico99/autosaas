@@ -11,7 +11,7 @@
 const { OUTPUT_SCHEMA } = require('./buildPrompt');
 const { getSearchTopic, familyOf, SEARCH_FAMILIES, TONES_WITH_NOTE } = require('./searchTopics');
 const { MAX_QUOTES } = require('./postTypes');
-const { buildSearchBrief } = require('./searchBrief');
+const { buildSearchBrief, collectOriginalSources, isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText } = require('./searchBrief');
 
 // ★말투 16개(유형 A/B/C/D × 4) 상세 문체 지시. 유형별 기본 말투는 UI가 자동 선택, 여기서 "어떻게 쓸지"를 지시. 전부 존댓말.
 //   ★어떤 말투든 공통: 어려운 용어는 반드시 쉽게 풀어서 설명한다.
@@ -206,9 +206,17 @@ function buildSearchSystemPrompt(topicKey) {
     .join('\n');
 }
 
-function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, brief } = {}) {
+function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief } = {}) {
   const t = getSearchTopic(topicKey);
-  const generationBrief = brief || buildSearchBrief({ keyword, topic: topicKey, review, source, memo, paid, style, autocomplete, newsArticles, keywordFacts, officialFacts, placeReviews });
+  const evidenceSources = (Array.isArray(originalSources) ? originalSources
+    : collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources })).filter((item) => {
+    if (!item || !isValidHttpUrl(item.url) || !meaningfulText(item.text || item.body)) return false;
+    if (item.sourceType === 'user-source') return isValidUserSource(item);
+    if (item.sourceType === 'institution-page') return isInstitutionPage(item);
+    if (item.sourceType === 'news-article') return isArticleBody(item);
+    return false;
+  });
+  const generationBrief = brief || buildSearchBrief({ keyword, topic: topicKey, review, source, memo, paid, style, autocomplete, newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews });
   const lines = [];
   lines.push(`주제: ${t.group} > ${t.label}`);
   // ★★주제 × 키워드 관계 규칙 — 키워드가 주제와 맞으면 "주제의 관점"으로, 안 맞으면 "키워드 내용" 그대로.
@@ -281,7 +289,7 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     lines.push(`- ★★★commentCta(이웃추가 유도)는 반드시 "전국" 범위로 넓게 잡아라 — 방문한 지역(${(review.places[0] && review.places[0].place) || '그 동네'})이나 그 가게 하나로 좁히지 마라. 좋은 예: "전국 내돈내산 ${isTravel ? '여행지가' : '맛집이'} 궁금하시다면 이웃추가 꼭 해주세요~!!" / "전국 ${isTravel ? '여행·숙소' : '맛집·카페'} 솔직후기 계속 올릴게요, 이웃추가 환영이에요~!!". ★나쁜 예(너무 좁음, 금지): "용인 처인구 맛집 궁금하시면 이웃추가", "○○동 △△식당 후기 계속 보고 싶으면 이웃추가". 말투는 친근하게("~해주세요~!!").`);
   }
   // ★링크형 — 원문 자료를 바탕으로 재작성. (출처는 사이트명 텍스트로, 부실하면 보강)
-  if (source && (source.text || '').trim()) {
+  if (isValidUserSource(source)) {
     lines.push('');
     lines.push('[원문 자료 — 이 링크 내용을 바탕으로 검색용 글로 "재작성"한다]');
     if (source.title) lines.push(`원문 제목: ${source.title}`);
@@ -400,45 +408,74 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     lines.push('- ★위 목록과 같거나 거의 같은 소재는 이번 글에서 다루지 마라. 다른 인물·다른 사건·다른 세부 인텐트로 잡아라.');
     lines.push('- ★★★[재등장 = 다른 각도] 단, 이번 키워드가 위 목록의 어떤 대상과 "같은 대상"이면 = 그 주제가 다시 뜬 것이니, 피하지 말고 "위 제목과 절대 겹치지 않는 완전히 다른 각도"로 써라 — 새 회차·새 국면·다른 인물 중심·여론 변화·결말/전개 등. 전에 쓴 내용·제목 반복 금지.');
   }
-  // ★★★[주력 근거] 공식 사실 — 네이버 AI브리핑 요약 + 정부/기관 페이지 본문(icbp.go.kr 등). 블로그보다 우선하는 "정확한 원문".
-  if (officialFacts && ((officialFacts.brief && officialFacts.brief.length > 60) || (Array.isArray(officialFacts.pages) && officialFacts.pages.length))) {
+  // Search summaries help locate sources; only validated institution page bodies count as original evidence.
+  const institutionPages = (officialFacts && Array.isArray(officialFacts.pages) ? officialFacts.pages : [])
+    .filter(isInstitutionPage);
+  if (officialFacts && String(officialFacts.brief || '').trim().length > 60) {
     lines.push('');
-    lines.push(`[★★★공식 정보 (최우선 근거) — "${keyword}"의 실제 제도/사실. 네이버 AI브리핑 + 정부·기관 공식 페이지에서 읽어온 것]`);
-    if (officialFacts.brief && officialFacts.brief.length > 60) {
-      lines.push(`◆ AI브리핑/검색 요약: ${String(officialFacts.brief).slice(0, 1400)}`);
-    }
-    (officialFacts.pages || []).slice(0, 2).forEach((p) => {
-      lines.push(`◆ 공식 페이지(${(p.url || '').replace(/^https?:\/\//, '').slice(0, 40)}): ${String(p.text || '').slice(0, 1400)}`);
+    lines.push(`[탐색용 검색 요약 — "${keyword}" 검색에서 발견한 단서이며 기관 원문이 아님]`);
+    lines.push(String(officialFacts.brief).slice(0, 1400));
+    lines.push('- 이 요약만으로 자격·금액·일정 등 구체 사실을 확인된 내용처럼 쓰지 말고, 원문이 없으면 단정하지 마라.');
+  }
+  if (institutionPages.length) {
+    lines.push('');
+    lines.push(`[기관 도메인 원문 — 본문이 있고 기관 호스트가 확인된 페이지]`);
+    institutionPages.slice(0, 3).forEach((page) => {
+      lines.push(`◆ ${page.title || '기관 페이지'} (${page.url}): ${String(page.text || page.body || page.content || '').slice(0, 1400)}`);
     });
-    lines.push('- ★★★위 "공식 정보"를 "이 글의 사실 뼈대"로 삼아라 — 여기 나온 자격·대상·금액·본인부담·사용처·신청방법·신청기간을 "구체적으로" 본문에 옮겨라(두루뭉술하게 "지역마다 다르니 문의하세요"로 때우지 마라. 공식 정보에 있는 건 구체적으로 쓰고, 정말 지역별로 다른 부분만 "확인 권장"으로).');
-    lines.push('- ★블로그·뉴스는 보조일 뿐, 이 공식 정보와 충돌하면 공식 정보를 따른다. 공식 정보에 없는 수치는 지어내지 말 것.');
-    lines.push('- ★단 페이지 본문에 섞인 메뉴·푸터·광고 텍스트는 무시하고 "그 제도의 실제 내용"만 추려 쓴다.');
-    lines.push('- 글 마지막(commentCta 전) text 블록에 "참고한 공식 자료: 기관명(도메인)"을 한 줄로 적는다. 도메인은 위 공식 페이지 주소에서만 가져온다.');
+    lines.push('- 위 기관 페이지 본문에 실제로 적힌 사실만 사용하고, 요약과 충돌하면 이 원문을 우선한다. 확인된 기관 도메인이라고 해서 내용의 정확성까지 보증되는 것은 아니다.');
   }
-  // ★★★뉴스 기사 "본문 전체" — 제목·스니펫이 아니라 실제 기사 내용(경기 세부·인터뷰 발언 등). 사실의 최우선 근거.
-  if (Array.isArray(newsArticles) && newsArticles.length) {
+  const originalNews = evidenceSources.filter((item) => item.sourceType === 'news-article');
+  if (originalNews.length) {
     lines.push('');
-    lines.push(`[★★★실제 기사 본문 (사실의 최우선 근거) — "${keyword}" 관련 최신 뉴스 ${newsArticles.length}건의 실제 본문. 이 안에 있는 사실만 쓴다]`);
-    newsArticles.slice(0, 3).forEach((a, i) => {
-      lines.push(`  ◆ 기사${i + 1}${a.title ? '(' + a.title.slice(0, 50) + ')' : ''}: ${String(a.body || '').slice(0, 1500)}`);
+    lines.push(`[기사 원문 본문 — 검색 발췌가 아닌 URL이 확인된 기사 본문]`);
+    originalNews.slice(0, 3).forEach((article, i) => {
+      lines.push(`  ◆ 기사${i + 1}${article.title ? '(' + article.title.slice(0, 50) + ')' : ''} (${article.url}): ${String(article.text || '').slice(0, 1500)}`);
     });
-    lines.push('- ★★★★사실(누가 이겼는지·스코어·선발 라인업·누가 무슨 챔피언/역할을 했는지·세트별 내용·선수 발언·순위)은 "위 기사 본문에 실제로 적힌 것"만 써라. 기사에 없는 라인업·출전 선수·챔피언·스코어·발언을 절대 지어내지 마라(하나만 틀려도 글 전체가 거짓이 된다 — 예: 실제로 선발이었던 선수를 "결장했다"고 쓰면 치명적).');
-    lines.push('- ★기사 본문에 "세트별 내용, 어떤 선수가 어떤 챔피언, 명장면, 감독·선수 인터뷰"가 있으면 그 구체적 디테일을 적극 활용해 글을 풍부하게 채워라(그게 검색자가 원하는 알맹이다). 여러 기사에 공통으로 나온 사실일수록 확실하다.');
+    lines.push('- 중요한 수치·발언·일정은 위 기사 본문에 실제로 나온 경우에만 단정하라.');
   }
-  // ★★검색 의도 파악의 핵심 재료 — 최신 뉴스 팩트 + (인물이면) 나무위키 배경. "왜 이걸 검색하는지"를 여기서 파악한다.
-  if (Array.isArray(keywordFacts) && keywordFacts.length) {
+  const otherOriginals = evidenceSources.filter((item) => item.sourceType === 'user-source');
+  if (otherOriginals.length) {
     lines.push('');
-    lines.push(`[최근 이슈·팩트 — "${keyword}"가 왜 지금 검색되는지의 실제 근거(뉴스 제목들)]`);
-    lines.push(`  ${keywordFacts.slice(0, 14).join(' / ')}`);
+    lines.push('[사용자가 제공한 원문 — 링크와 본문을 확인한 자료]');
+    otherOriginals.slice(0, 2).forEach((item) => {
+      lines.push(`◆ ${item.title || '사용자 원문'} (${item.url}): ${String(item.text || '').slice(0, 1800)}`);
+    });
   }
+  const collectedInstitutionPages = evidenceSources.filter((item) => item.sourceType === 'institution-page'
+    && !institutionPages.some((page) => page.url === item.url));
+  if (collectedInstitutionPages.length) {
+    lines.push('');
+    lines.push('[기관 도메인 원문 — 출처 메타데이터와 본문이 확인된 페이지]');
+    collectedInstitutionPages.slice(0, 3).forEach((page) => {
+      lines.push(`◆ ${page.title || '기관 페이지'} (${page.url}): ${String(page.text || '').slice(0, 1400)}`);
+    });
+    lines.push('- 원문에 실제로 적힌 내용만 사용한다. 출처 유형은 본문 내용의 정확성을 보증하지 않는다.');
+  }
+  const snippets = [];
+  if (Array.isArray(keywordFacts)) snippets.push(...keywordFacts.map((item) => typeof item === 'string' ? item : (item && (item.text || item.body || item.title)) || ''));
+  if (Array.isArray(newsArticles)) {
+    snippets.push(...newsArticles.filter((item) => !originalNews.some((original) => original.url === item.url))
+      .map((item) => typeof item === 'string' ? item : (item && (item.snippet || item.summary || item.body || item.text || item.title)) || ''));
+  }
+  if (Array.isArray(keywordSources)) {
+    snippets.push(...keywordSources.filter((item) => item && !evidenceSources.some((original) => original.url === item.url && meaningfulText(item.text || item.body)))
+      .map((item) => item.text || item.body || item.title || ''));
+  }
+  if (snippets.some((item) => String(item || '').trim())) {
+    lines.push('');
+    lines.push('[검색 제목·발췌 — 원문 확인 전의 탐색 자료]');
+    snippets.filter((item) => String(item || '').trim()).slice(0, 20).forEach((item) => lines.push(`· ${String(item).slice(0, 300)}`));
+    lines.push('- 제목·발췌만으로 최신 사실이나 구체 수치가 확인됐다고 단정하지 마라. URL과 본문이 확인된 기사·사용자·기관 원문이 없으면 최신 이슈 사실을 만들어 채우지 마라.');
+  }
+  // Search and background summaries explain discovery context; the original-source blocks above carry evidence.
   if (Array.isArray(keywordBackground) && keywordBackground.length) {
-    lines.push(`[인물/대상 배경 — 공개 자료·뉴스에서 모은 사실]`);
+    lines.push(`[인물/대상 배경 탐색 요약 — 원문 근거 아님]`);
     lines.push(`  ${keywordBackground.slice(0, 12).join(' / ')}`);
     lines.push('- ★★★제목과 본문 어디에도 "나무위키"라는 단어를 절대 쓰지 마라(위 배경은 참고용 조사 자료일 뿐, 출처를 글에 노출하지 않는다). "나무위키 정리"·"나무위키에 따르면" 같은 표현 금지. 사실만 자연스럽게 녹여라. "위키백과"·"위키"도 마찬가지로 쓰지 마라.');
   }
   if ((Array.isArray(keywordFacts) && keywordFacts.length) || (Array.isArray(keywordBackground) && keywordBackground.length)) {
-    lines.push('- ★★★위 "최근 이슈·배경"이 곧 "사람들이 이 키워드를 검색하는 진짜 이유"다. 반드시 이 맥락을 파악해서 본문에 담아라. 예: 어떤 배우가 "그림" 때문에 화제면 → 왜 화제인지(누구와 비교돼서, 무슨 논란이 얽혀서)를 구체적으로 짚어라. 이 배경을 빼먹고 표면적인 얘기만 하면 검색자가 원하는 답이 아니다.');
-    lines.push('- ★단 위 팩트에 없는 구체 사실(실명·연도·수치)은 지어내지 말고, 확인 안 된 건 "~라는 이야기가 있다/논란이 됐다" 식 추정·완곡으로.');
+    lines.push('- 위 검색·배경 자료는 검색 의도를 파악하는 단서일 뿐 원문 근거가 아니다. 구체 사실은 위에 제시된 확인된 원문 본문이 뒷받침할 때만 단정하고, 원문이 없으면 추측이나 완곡한 표현으로 사실처럼 쓰지 마라.');
   }
   // ★★★작품(드라마·웹툰·영화·예능·시리즈) + "정보성 인텐트" 감지 → 작품 정보 정리 + 문서예고형 제목 + 공식 포스터 강제.
   //   (예: "로또 1등도 출근합니다 기본정보"는 티빙 드라마인데, 극중 '이준혁 13억 당첨'을 실화처럼 훅으로 잡던 문제 해결)

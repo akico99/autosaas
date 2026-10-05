@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Delayed local cards</title></head>
+  <body>
+    <main id="cards"></main>
+    <script>
+      setTimeout(() => {
+        document.querySelector('#cards').innerHTML =
+          '<article class="card"><h2>Local article one</h2></article>' +
+          '<article class="card"><h2>Local article two</h2></article>';
+      }, 300);
+    </script>
+  </body>
+</html>

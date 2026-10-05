@@ -21,9 +21,9 @@ const { fetchAutocomplete } = require('../keyword/expand');
 const { fetchNewsArticles, fetchBlogFacts, fetchPlaceReviews, fetchNearbyAttractions } = require('../keyword/trends');
 const { observeSerp } = require('../keyword/serpObserve');
 const scrapeHealth = require('../scrape/health');
-const { isSearchBlocked } = require('../scrape/naverSearchGuard');
+const { isSearchBlocked, getBlockState } = require('../scrape/naverSearchGuard');
 const { factCheckPost } = require('./factCheck');
-const { buildSearchBrief } = require('./searchBrief');
+const { buildSearchBrief, collectOriginalSources, collectSourceMetadata } = require('./searchBrief');
 const { checkRequiredAnswers, detectExperienceClaims } = require('./searchContentCheck');
 
 // ★네이버 지도 검색어 = "지역 상호명"으로만(사용자 확정 2026-08-26). 프랜차이즈 지점 구분은 사용자가 가게 이름에 지점까지 적어줌(UI 안내).
@@ -51,23 +51,44 @@ function buildMapQueries(name, addr) {
  * @returns {Promise<{ post, validation, meta, attempts }>}
  */
 // ★링크 제목에서 네이버 검색용 "메인 키워드" 1개 뽑기 — 가벼운 하이쿠(토큰 절약).
-async function extractMainKeyword(title, text, model) {
+async function extractMainKeyword(title, text, model, run = runClaude) {
   const system =
     '너는 네이버 검색 키워드 추출기다. 주어진 글 제목(과 앞부분)에서 "사람들이 네이버에 실제로 검색할 만한 메인 키워드" 1개만 뽑아라. 2~10글자 핵심 명사구, 사이트명·기자명·군더더기 제외. 설명·따옴표 없이 키워드만 한 줄로 출력.';
   const user = `제목: ${title || ''}\n${text ? '앞부분: ' + String(text).slice(0, 300) : ''}\n\n메인 키워드 1개만:`;
-  const { text: out } = await runClaude({ system, user, model: model || 'claude-haiku-4-5-20251001' });
+  const { text: out } = await run({ system, user, model: model || 'claude-haiku-4-5-20251001' });
   return String(out || '').trim().split('\n')[0].replace(/^["'\s]+|["'\s]+$/g, '').slice(0, 30);
 }
 
-async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false } = {}) {
+async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false, keywordSources, run, factCheckRun, contentCheckRun } = {}) {
   const searchTopic = getSearchTopic(topic); // 잘못된 주제면 여기서 예외
   scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
+  if (officialFacts && officialFacts.error) {
+    const error = officialFacts.error;
+    const kind = String(error.kind || 'collection_error');
+    const code = String(error.code || '');
+    const parsedStatus = Number(error.status);
+    const status = Number.isFinite(parsedStatus) && parsedStatus > 0 ? parsedStatus : undefined;
+    const blocked = ['blocked', 'rate_limited'].includes(kind)
+      || code === 'NAVER_SEARCH_BLOCKED' || code === 'NAVER_SEARCH_RATE_LIMITED'
+      || status === 403 || status === 429;
+    scrapeHealth.record('official-facts', 0, {
+      query: keyword,
+      blocked,
+      status,
+      errorKind: kind,
+      errorCode: code,
+      resultKind: 'error',
+    });
+  }
   const system = buildSearchSystemPrompt(topic);
+  const modelRunner = typeof run === 'function' ? run : (args) => runClaude(args);
 
   // ★링크형 — 키워드 없이 링크만 준 경우, 링크 제목에서 "네이버 검색용 메인 키워드" 1개를 뽑는다(가벼운 하이쿠).
   let kw = keyword;
-  if (source && source.title && !kw) {
-    try { kw = await extractMainKeyword(source.title, source.text, model); } catch (e) { kw = ''; }
+  const initialSources = collectOriginalSources({ source, officialFacts, keywordSources });
+  const canExtractKeyword = !strictEvidence || initialSources.length > 0;
+  if (source && source.title && !kw && canExtractKeyword) {
+    try { kw = await extractMainKeyword(source.title, source.text, model, modelRunner); } catch (e) { kw = ''; }
   }
 
   // 같은 검색 목적의 자동완성 후보를 모아 기획 단계에서 걸러 사용한다.
@@ -87,6 +108,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       const isPerson = familyOf(topic) === 'A'; // 엔터형(방송·연예·드라마·영화·스타 등) = 인물 배경조사
       const ctx = await gatherKeywordContext(kw, { isPerson });
       keywordFacts = ctx.keywordFacts; keywordBackground = ctx.keywordBackground;
+      if (!keywordSources && Array.isArray(ctx.keywordSources)) keywordSources = ctx.keywordSources;
     } catch (e) { /* 조사 실패해도 글은 나온다 */ }
     // ★★뉴스 기사 "본문 전체"를 읽어온다 — 제목·스니펫만으론 경기 세부(라인업·챔피언·세트별)를 몰라 모델이 지어냄(치명적).
     //   실제 본문(인터뷰 발언 포함)을 넘겨야 정확히 쓴다. 스포츠·e스포츠·연예·일반뉴스 모두 대응.
@@ -147,10 +169,21 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
   }
 
   const searchBlocked = isSearchBlocked();
-  if (searchBlocked) scrapeHealth.record('serp', 0, { query: kw, blocked: true });
+  if (searchBlocked) {
+    const blockState = getBlockState();
+    scrapeHealth.record('serp', 0, {
+      query: kw,
+      blocked: true,
+      status: blockState.status,
+      errorKind: blockState.kind,
+      errorCode: blockState.code,
+    });
+  }
+  const originalSources = collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources });
+  const sourceMetadata = collectSourceMetadata({ source, officialFacts, newsArticles, keywordFacts, keywordSources });
   const brief = buildSearchBrief({
     keyword: kw, topic, review, source, memo, paid, style, autocomplete,
-    newsArticles, keywordFacts, officialFacts, placeReviews,
+    newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews,
     searchBlocked, serp,
   });
   if (strictEvidence && brief.preHoldReasons.length) {
@@ -164,6 +197,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       validation: null,
       attempts: 0,
       factCheck: null,
+      meta: { sources: sourceMetadata },
       scrapeHealth: scrapeHealth.report(),
     };
   }
@@ -177,7 +211,8 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     try {
       cand.factCheck = await factCheckPost({
         post: cand.post, facts: keywordFacts, articles: newsArticles,
-        background: keywordBackground, placeReviews,
+        background: keywordBackground, placeReviews, officialFacts, originalSources,
+        run: typeof factCheckRun === 'function' ? factCheckRun : modelRunner,
       });
     } catch (e) { cand.factCheck = { ran: false, issues: [], highCount: 0, reason: e.message }; }
     try { cand.scrapeHealth = scrapeHealth.report(); } catch (e) {}
@@ -204,8 +239,9 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
           }
         : null;
 
-    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, brief });
-    const { text, meta } = await runClaude({ system, user, model });
+    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief });
+    const { text, meta: generatedMeta } = await modelRunner({ system, user, model });
+    const meta = { ...(generatedMeta || {}), sources: sourceMetadata };
     // ★JSON 파싱 실패도 재시도 대상 — 마지막 시도가 아니면 다시 생성.
     let post;
     try {
@@ -383,7 +419,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     });
     let contentCheck = { ran: false, items: [], missing: [], reason: '형식 검사에서 심각한 문제가 있어 생략' };
     if (!validation.severe.length) {
-      contentCheck = await checkRequiredAnswers({ post, brief });
+      contentCheck = await checkRequiredAnswers({ post, brief, run: typeof contentCheckRun === 'function' ? contentCheckRun : modelRunner });
       if (contentCheck.missing.length) {
         const labels = contentCheck.missing.map((item) => item.label).join(', ');
         validation.severe.push(`필수 답변 누락: ${labels}`);

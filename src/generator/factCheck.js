@@ -15,9 +15,11 @@
 //     최종 판단은 사람이 한다. 그래서 결과는 경고이지 차단이 아니다.
 
 const { runClaude } = require('./runClaude');
+const { isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText, collectOriginalSources } = require('./searchBrief');
 
 const SYSTEM = [
-  '너는 블로그 원고의 사실 검증기다. 원고와 "근거 자료"를 받아, 원고 안의 검증 가능한 주장이 근거에 있는지 대조한다.',
+  '너는 블로그 원고의 사실 검증기다. 원고와 확인된 원문을 받아, 원고 안의 검증 가능한 주장이 원문에 있는지 대조한다.',
+  '검색 요약·제목·발췌·후기는 원문이 아니며 어떤 주장도 supported로 만들 수 없다. 배경 파악용으로만 읽는다.',
   '',
   '[검사 대상 — 이런 것만 본다]',
   '- 날짜·기간·시각 (예: "9월 17일 개봉", "3년 만에")',
@@ -74,33 +76,74 @@ function parseLoose(text) {
  * @param {string} [p.model]           기본 haiku(값싸고 충분)
  * @returns {Promise<{ran:boolean, issues:Array, highCount:number, reason?:string}>}
  */
-async function factCheckPost({ post, facts, articles, background, placeReviews, model = 'claude-haiku-4-5-20251001' } = {}) {
+function isOriginalFactSource(source) {
+  if (!source || typeof source !== 'object' || !isValidHttpUrl(source.url)
+    || !meaningfulText(source.text || source.body)) return false;
+  const sourceType = String(source.sourceType || '').toLowerCase();
+  if (sourceType === 'user-source') return isValidUserSource(source);
+  if (sourceType === 'institution-page') return isInstitutionPage(source);
+  if (sourceType === 'news-article') return isArticleBody(source);
+  return false;
+}
+
+async function factCheckPost({ post, facts, articles, background, placeReviews, officialFacts, originalSources, run, model = 'claude-haiku-4-5-20251001' } = {}) {
   const body = blocksToText(post && post.blocks);
   if (!body || body.length < 200) return { ran: false, issues: [], highCount: 0, reason: '본문이 짧아 생략' };
 
   const ev = [];
+  const declaredOriginals = Array.isArray(originalSources) ? originalSources : [];
+  const derivedOriginals = collectOriginalSources({ officialFacts });
+  const verifiedArticleIndexes = new Set();
+  const articleSidecar = Array.isArray(articles && articles.sources) ? articles.sources : [];
+  if (Array.isArray(articles)) {
+    articles.forEach((article, index) => {
+      const single = [article];
+      if (articleSidecar[index]) single.sources = [articleSidecar[index]];
+      const articleOriginals = collectOriginalSources({ newsArticles: single });
+      articleOriginals.forEach((source) => derivedOriginals.push(source));
+      if (articleOriginals.some((source) => source.sourceType === 'news-article')) verifiedArticleIndexes.add(index);
+    });
+  }
+  const originals = [...declaredOriginals, ...derivedOriginals]
+    .filter(isOriginalFactSource)
+    .filter((source, index, all) => all.findIndex((candidate) => candidate.sourceType === source.sourceType && candidate.url === source.url) === index);
+  if (originals.length) {
+    ev.push('[확인된 원문 — 아래 URL과 실제 본문만 확인 근거로 사용]');
+    originals.slice(0, 8).forEach((source) => {
+      const label = source.sourceType === 'institution-page' ? '기관 원문'
+        : source.sourceType === 'user-source' ? '사용자 제공 원문' : '기사 원문';
+      ev.push(`◆ ${label}${source.title ? '(' + String(source.title).slice(0, 80) + ')' : ''} (${source.url}): ${String(source.text || source.body || '').slice(0, 1800)}`);
+    });
+  }
   if (Array.isArray(articles) && articles.length) {
-    ev.push('[기사 본문]');
-    articles.slice(0, 3).forEach((a, i) => ev.push(`◆ 기사${i + 1}${a.title ? '(' + String(a.title).slice(0, 50) + ')' : ''}: ${String(a.body || '').slice(0, 1400)}`));
+    const unverifiedArticles = articles.filter((article, index) => !verifiedArticleIndexes.has(index));
+    if (unverifiedArticles.length) {
+      ev.push('[수집된 기사 텍스트 — 출처 URL이 확인되지 않아 원문 근거가 아님]');
+      unverifiedArticles.slice(0, 3).forEach((a, i) => ev.push(`◆ 자료 ${i + 1}${a.title ? '(' + String(a.title).slice(0, 50) + ')' : ''}: ${String(a.body || '').slice(0, 900)}`));
+    }
   }
   if (Array.isArray(facts) && facts.length) {
-    ev.push('[뉴스 제목·요약]');
+    ev.push('[검색 제목·요약 — 원문 근거가 아님]');
     facts.slice(0, 20).forEach((f) => ev.push(`· ${f}`));
   }
   if (Array.isArray(background) && background.length) {
-    ev.push('[인물 배경]');
+    ev.push('[배경 참고 자료 — 원문 근거가 아님]');
     background.slice(0, 15).forEach((b) => ev.push(`· ${b}`));
   }
   if (Array.isArray(placeReviews) && placeReviews.length) {
-    ev.push('[참고 후기]');
+    ev.push('[후기 발췌 — 원문 근거가 아님]');
     placeReviews.slice(0, 10).forEach((r) => ev.push(`· ${r}`));
   }
   // 근거가 아예 없으면 대조할 게 없다(자동 키워드·리뷰형 등) → 검사 생략.
   if (!ev.length) return { ran: false, issues: [], highCount: 0, reason: '대조할 근거 없음' };
 
   const user = [
-    '[근거 자료 — 이 안에 있는 것만 "사실 확인됨"이다]',
+    '[근거 자료 — 확인된 원문과 탐색용 발췌를 구분해서 검토한다]',
+    '원문 본문에 있는 사실만 supported로 판정한다. 요약·제목·발췌·후기만 뒷받침하는 주장은 supported로 판정하지 않는다.',
     ev.join('\n'),
+    officialFacts && String(officialFacts.brief || '').trim()
+      ? `\n[탐색용 검색 요약 — 원문 아님]\n${String(officialFacts.brief).slice(0, 1000)}`
+      : '',
     '',
     '[검사할 원고]',
     `제목: ${(post && post.title) || ''}`,
@@ -108,7 +151,8 @@ async function factCheckPost({ post, facts, articles, background, placeReviews, 
   ].join('\n');
 
   try {
-    const { text } = await runClaude({ system: SYSTEM, user, model });
+    const runner = typeof run === 'function' ? run : (args) => runClaude(args);
+    const { text } = await runner({ system: SYSTEM, user, model });
     const parsed = parseLoose(text);
     const claims = (parsed && Array.isArray(parsed.claims)) ? parsed.claims : [];
     const issues = claims
@@ -127,4 +171,4 @@ async function factCheckPost({ post, facts, articles, background, placeReviews, 
   }
 }
 
-module.exports = { factCheckPost, blocksToText, parseLoose };
+module.exports = { factCheckPost, blocksToText, parseLoose, isOriginalFactSource };

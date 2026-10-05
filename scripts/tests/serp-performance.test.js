@@ -137,9 +137,17 @@ test('buildSearchBrief calibrates only ambiguous intent and carries SERP notes a
 });
 
 test('buildSearchBrief holds drafts when search is blocked', () => {
-  const brief = buildSearchBrief({ keyword: '청년 지원금', topic: 'society', searchBlocked: true });
+  const brief = buildSearchBrief({
+    keyword: '청년 지원금', topic: 'society', searchBlocked: true,
+    source: {
+      url: 'https://example.org/support',
+      title: '청년 지원금 안내',
+      text: '청년 지원금의 신청 자격과 지급 일정, 신청 절차를 안내하는 원문 본문입니다.'.repeat(2),
+    },
+  });
   assert.equal(brief.evidence.searchBlocked, true);
-  assert.ok(brief.preHoldReasons.includes('네이버 검색 제한으로 근거 자료를 가져오지 못함'));
+  assert.ok(brief.warnings.some((warning) => /검색 제한/.test(warning)));
+  assert.equal(brief.preHoldReasons.includes('네이버 검색 제한으로 근거 자료를 가져오지 못함'), false);
 });
 
 test('tracker matches exact and close titles once, excluding posts published before generation', () => {

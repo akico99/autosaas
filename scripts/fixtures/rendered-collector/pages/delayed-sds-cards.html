@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Delayed SDS search cards</title></head>
+  <body>
+    <main id="results"></main>
+    <script>
+      setTimeout(() => {
+        document.querySelector('#results').innerHTML = `
+          <section class="sds-results">
+            <div class="sds-comps-base-layout sds-comps-vertical-layout result-card">
+              <div class="sds-comps-vertical-layout">
+                <a href="https://news.example.com/article/first">
+                  <span class="sds-comps-text sds-comps-text-type-headline1">First SDS article without a summary</span>
+                </a>
+              </div>
+            </div>
+            <div class="sds-comps-base-layout sds-comps-vertical-layout result-card">
+              <div class="sds-comps-vertical-layout">
+                <a href="https://news.example.com/article/second">
+                  <span class="sds-comps-text sds-comps-text-type-headline1">Second SDS article</span>
+                </a>
+              </div>
+              <div class="sds-comps-vertical-layout">
+                <a href="https://news.example.com/article/second">
+                  <span class="sds-comps-text sds-comps-text-type-body1">Summary belonging only to the second article.</span>
+                </a>
+              </div>
+            </div>
+          </section>`;
+      }, 300);
+    </script>
+  </body>
+</html>

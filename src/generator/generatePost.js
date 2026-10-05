@@ -717,7 +717,7 @@ function validatePost(post, postType) {
 // ★키워드 배경 조사(뉴스 팩트 + 인물이면 나무위키) — 홈판 파이프라인을 검색용도 쓰게 함수로 분리.
 //   "왜 이 키워드를 검색하는지"(증조부 논란 등)를 파악하려면 최신 뉴스·나무위키 배경이 반드시 필요하다.
 async function gatherKeywordContext(keyword, { isPerson = false } = {}) {
-  if (!keyword) return { keywordFacts: null, keywordBackground: null, keywordAngles: null };
+  if (!keyword) return { keywordFacts: null, keywordBackground: null, keywordAngles: null, keywordSources: [] };
   const core = coreEntity(keyword);
   const [acKw, acCore] = await Promise.all([
     fetchAutocomplete(keyword).catch(() => []),
@@ -762,6 +762,7 @@ async function gatherKeywordContext(keyword, { isPerson = false } = {}) {
     }
     return out;
   })();
+  const keywordSources = collectKeywordSources(keywordFacts, recentArr, blogArr);
   let bg = [];
   if (core) {
     // ★나무위키 배경은 "모든 주제"에서 시도(인물·게임·제품·정책·시험 등 나무위키에 있으면 유용). 없으면 빈 배열(뉴스가 배경 역할).
@@ -777,7 +778,25 @@ async function gatherKeywordContext(keyword, { isPerson = false } = {}) {
       bg = collect(bgArr, 10);
     }
   }
-  return { keywordFacts: keywordFacts.length ? keywordFacts : null, keywordBackground: bg.length ? bg : null, keywordAngles, contextAnchors };
+  return { keywordFacts: keywordFacts.length ? keywordFacts : null, keywordSources, keywordBackground: bg.length ? bg : null, keywordAngles, contextAnchors };
 }
 
-module.exports = { generatePost, validatePost, parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectPlaceInfo, injectTravelPlaceInfo, gatherKeywordContext };
+function collectKeywordSources(keywordFacts, recentArr = [], blogArr = []) {
+  const chosenFacts = new Set(Array.isArray(keywordFacts) ? keywordFacts : []);
+  const out = [];
+  const seen = new Set();
+  for (const items of [...blogArr, ...recentArr]) {
+    for (const source of (Array.isArray(items) && Array.isArray(items.sources) ? items.sources : [])) {
+      if (!source || !source.url || !source.title || !source.text || source.kind !== 'search-snippet') continue;
+      const limit = source.sourceType === 'blog-snippet' ? 200 : 180;
+      const fact = `${source.title} — ${String(source.text).slice(0, limit)}`;
+      const key = `${source.url}\n${fact}`;
+      if (!chosenFacts.has(fact) || seen.has(key)) continue;
+      seen.add(key);
+      out.push(source);
+    }
+  }
+  return out;
+}
+
+module.exports = { generatePost, validatePost, parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectPlaceInfo, injectTravelPlaceInfo, gatherKeywordContext, collectKeywordSources };
