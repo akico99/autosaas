@@ -54,6 +54,8 @@ const { readTopicProfiles, writeTopicProfiles, DEFAULT_PROFILES } = require('../
 const { findKeywordConflict, appendKeywordLog } = require('../src/topics/keywordLog');
 const { resolveTopicImageAssets } = require('../src/topics/assets');
 const { captureTopicSite, createTopicCaptureSession: createElectronTopicCaptureSession } = require('./siteCapture');
+const topicDrafts = require('../src/topics/drafts');
+const { parseDraftText, postToDraftText, ensureImageSlots } = require('../src/topics/draftText');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -1337,7 +1339,10 @@ app.whenReady().then(async () => {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
-  ipcMain.handle('generate:topic', async (_e, request = {}) => {
+  // 사주 탭 원고 1편 생성(또는 불러온 원고 마무리) — 사주 규칙 검사·사진 배정·기록까지 한 번에.
+  //   importedPost가 있으면 Claude를 부르지 않고 그 원고를 그대로 쓴다.
+  //   skipLogs면 키워드 기록·성과 항목을 다시 남기지 않는다(보관함 원고 수정용).
+  async function runTopicGeneration(request = {}, { importedPost = null, skipLogs = false } = {}) {
     try {
       const { topicId = 'saju', profileKey, keyword: rawKeyword, purpose = 'search', productKey, opts = {} } = request;
       const topic = TOPICS[topicId];
@@ -1360,12 +1365,15 @@ app.whenReady().then(async () => {
       }
       const assetsData = topicAssetList(topicId);
       const context = buildTopicContext({ topic, profile, keyword, productKey: chosenProductKey, purpose, assets: assetsData.items, blogKey: profile.key });
-      const generated = purpose === 'search'
-        ? await generateSearchPost({ topic: 'daily', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, strictEvidence: !!opts.auto, maxAttempts: 2 })
-        : await generatePost({ type: 'saju', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, maxAttempts: 2 });
+      const generated = importedPost
+        ? { post: importedPost, status: 'review', reviewReasons: ['직접 작성한 원고라 근거 대조를 하지 않았습니다.'], holdReasons: [], brief: { intentLabel: '직접 작성 원고' } }
+        : purpose === 'search'
+          ? await generateSearchPost({ topic: 'daily', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, strictEvidence: !!opts.auto, maxAttempts: 2 })
+          : await generatePost({ type: 'saju', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, maxAttempts: 2 });
       const post = generated && generated.post;
       if (!post) return { ok: true, status: generated.status || 'hold', holdReasons: generated.holdReasons || ['원고를 만들지 못했습니다.'], post: null, brief: generated.brief || null };
       post.blocks = Array.isArray(post.blocks) ? post.blocks : [];
+      if (importedPost) post.blocks = ensureImageSlots(post, { maxImages: purpose === 'search' ? 6 : 5 }).blocks;
       post.blocks = post.blocks.filter((block) => !(block && block.kind === 'link' && block.href === context.ctaUrl));
       post.blocks.push({ kind: 'link', text: `${context.product.label} 더 자세히 보기`, href: context.ctaUrl });
       const checked = checkTopicPost(post, { topic, product: context.product, disclosureLine: context.disclosureLine });
@@ -1397,8 +1405,8 @@ app.whenReady().then(async () => {
       fs.writeFileSync(usageFile + '.tmp', JSON.stringify(usage, null, 2), 'utf8');
       fs.renameSync(usageFile + '.tmp', usageFile);
       if (conflict && conflict.kind === 'same-blog') reviewReasons.push('같은 블로그에서 14일 이내 사용한 키워드입니다.');
-      appendKeywordLog(logFile, { topicId, blogKey: profile.key, keyword, at: new Date().toISOString() });
-      try {
+      if (!skipLogs) appendKeywordLog(logFile, { topicId, blogKey: profile.key, keyword, at: new Date().toISOString() });
+      if (!skipLogs) try {
         const store = readSearchPerformance();
         store.entries.push(createEntry({ keyword, topic: topicId, intent: generated.brief && generated.brief.intent || 'general', status, title: post.title || '', generatedAt: new Date().toISOString(), blogKey: profile.key, productKey: chosenProductKey }));
         store.entries = store.entries.slice(-500);
@@ -1406,6 +1414,96 @@ app.whenReady().then(async () => {
       } catch (error) { console.warn('[perf] 주제 성과 항목 저장 실패:', error.message); }
       return { ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })), status, holdReasons, reviewReasons, brief: generated.brief || { intentLabel: purpose === 'home' ? '홈판용' : '검색 의도 미분류' }, contentCheck: generated.contentCheck || null, validation: generated.validation || null, factCheck: generated.factCheck || null, scrapeHealth: generated.scrapeHealth || null, meta: generated.meta || null, topic: { profileKey: profile.key, productKey: chosenProductKey, ctaUrl: context.ctaUrl, conflict: conflict || null } };
     } catch (error) { return { ok: false, error: error.message }; }
+  }
+  ipcMain.handle('generate:topic', async (_e, request = {}) => runTopicGeneration(request));
+
+  // ★원고 보관함 — 미리 생성(여러 키워드 순서대로) · 직접 쓴 원고 불러오기 · 수정 · 에디터 넣기 표시.
+  const topicDraftsFile = () => path.join(topicUserData(), 'topic-drafts.json');
+  const readDraftStore = () => topicDrafts.normalizeStore(readJsonFile(topicDraftsFile(), topicDrafts.emptyStore()));
+  const writeDraftStore = (store) => {
+    const file = topicDraftsFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file + '.tmp', JSON.stringify(store), 'utf8');
+    fs.renameSync(file + '.tmp', file);
+  };
+  const draftView = (draft) => ({ ...draft, text: draft.result && draft.result.post ? postToDraftText(draft.result.post) : '' });
+  const saveDraftFromResult = (request, result, source) => {
+    const status = result.ok ? (result.post ? result.status || 'review' : result.status || 'hold') : 'error';
+    const { store, draft } = topicDrafts.addDraft(readDraftStore(), {
+      topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword: String(request.keyword || '').trim(),
+      purpose: request.purpose, productKey: (result.topic && result.topic.productKey) || request.productKey || '', source,
+      status, holdReasons: result.ok ? result.holdReasons || [] : [result.error || '생성 실패'], reviewReasons: result.reviewReasons || [],
+      result: result.ok && result.post ? result : null,
+    });
+    writeDraftStore(store);
+    return draft;
+  };
+  let topicDraftBatch = null;
+  ipcMain.handle('topicDrafts:list', async (_e, topicId = 'saju') => {
+    try { return { ok: true, drafts: topicDrafts.listDrafts(readDraftStore(), topicId).map(draftView), running: !!topicDraftBatch }; }
+    catch (error) { return { ok: false, error: error.message, drafts: [] }; }
+  });
+  ipcMain.handle('topicDrafts:generate', async (event, request = {}) => {
+    if (topicDraftBatch) return { ok: false, error: '이미 미리 생성이 진행 중입니다.' };
+    const { keywords, dropped } = topicDrafts.parseKeywordList(Array.isArray(request.keywords) ? request.keywords.join('\n') : request.keywords, { max: 10 });
+    if (!keywords.length) return { ok: false, error: '키워드를 하나 이상 입력해 주세요.' };
+    topicDraftBatch = { cancelled: false };
+    const batch = topicDraftBatch;
+    const send = (payload) => { try { if (!event.sender.isDestroyed()) event.sender.send('topicDrafts:progress', payload); } catch (_) {} };
+    const summary = { made: 0, held: 0, skipped: 0, failed: 0, stopped: null, dropped };
+    try {
+      for (let index = 0; index < keywords.length; index += 1) {
+        if (batch.cancelled) { summary.stopped = 'cancelled'; break; }
+        const keyword = keywords[index];
+        send({ index, total: keywords.length, keyword, phase: 'start' });
+        const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword, purpose: request.purpose, productKey: request.productKey || '', opts: { auto: true } };
+        const result = await runTopicGeneration(single);
+        if (result.skipped) { summary.skipped += 1; send({ index, total: keywords.length, keyword, phase: 'skipped', reasons: result.holdReasons || [] }); continue; }
+        const draft = saveDraftFromResult(single, result, 'ai');
+        if (!result.ok) summary.failed += 1; else if (draft.status === 'hold') summary.held += 1; else summary.made += 1;
+        send({ index, total: keywords.length, keyword, phase: 'done', status: draft.status, id: draft.id });
+        if (!result.ok && /한도|limit|quota/i.test(String(result.error || ''))) { summary.stopped = 'token-limit'; break; }
+        if (isSearchBlocked()) { summary.stopped = 'search-blocked'; break; }
+      }
+    } finally { topicDraftBatch = null; }
+    send({ phase: 'finished', summary });
+    return { ok: true, summary };
+  });
+  ipcMain.handle('topicDrafts:cancel', async () => { if (topicDraftBatch) topicDraftBatch.cancelled = true; return { ok: true }; });
+  ipcMain.handle('topicDrafts:import', async (_e, request = {}) => {
+    try {
+      const assets = topicAssetList(request.topicId || 'saju').items || [];
+      const parsed = parseDraftText(request.text, { knownAssetIds: assets.map((asset) => asset.id) });
+      if (parsed.warnings.length) return { ok: false, error: parsed.warnings.join(' ') };
+      const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword: request.keyword, purpose: request.purpose, productKey: request.productKey || '', opts: { confirmed: true } };
+      const result = await runTopicGeneration(single, { importedPost: parsed.post });
+      if (!result.ok) return result;
+      return { ok: true, draft: draftView(saveDraftFromResult(single, result, 'import')) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('topicDrafts:update', async (_e, { id, text } = {}) => {
+    try {
+      const current = topicDrafts.listDrafts(readDraftStore()).find((draft) => draft.id === id);
+      if (!current) throw new Error('원고를 찾지 못했습니다.');
+      const assets = topicAssetList(current.topicId).items || [];
+      const parsed = parseDraftText(text, { knownAssetIds: assets.map((asset) => asset.id) });
+      if (parsed.warnings.length) return { ok: false, error: parsed.warnings.join(' ') };
+      const single = { topicId: current.topicId, profileKey: current.profileKey, keyword: current.keyword, purpose: current.purpose, productKey: current.productKey, opts: { confirmed: true } };
+      const result = await runTopicGeneration(single, { importedPost: parsed.post, skipLogs: true });
+      if (!result.ok) return result;
+      if (current.source === 'ai') result.reviewReasons = ['수정한 원고라 근거 대조를 다시 하지 않았습니다.'].concat((result.reviewReasons || []).filter((reason) => !/직접 작성한 원고/.test(reason)));
+      const { store, draft } = topicDrafts.updateDraft(readDraftStore(), id, { status: result.status, holdReasons: result.holdReasons || [], reviewReasons: result.reviewReasons || [], result });
+      writeDraftStore(store);
+      return { ok: true, draft: draftView(draft) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('topicDrafts:delete', async (_e, { id } = {}) => {
+    try { writeDraftStore(topicDrafts.removeDraft(readDraftStore(), id)); return { ok: true }; }
+    catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('topicDrafts:markInjected', async (_e, { id } = {}) => {
+    try { const { store } = topicDrafts.updateDraft(readDraftStore(), id, { injectedAt: new Date().toISOString() }); writeDraftStore(store); return { ok: true }; }
+    catch (error) { return { ok: false, error: error.message }; }
   });
 
   // 자동 로그인 유지 여부 저장 (렌더러 로그인 화면에서 설정)

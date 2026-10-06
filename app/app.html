@@ -326,6 +326,24 @@
           <button type="button" class="rsavebtn" id="topic-generate" style="width:100%">글 만들기</button>
           <div class="status" id="topic-status"></div>
         </div>
+        <details class="topic-card" id="topic-drafts-panel" open>
+          <summary style="cursor:pointer;font-weight:800">🗂️ 원고 보관함 (미리 만들기 · 불러오기)</summary>
+          <div class="subnote" style="margin-top:8px">위에서 고른 블로그 프로필과 용도를 씁니다. 미리 만들기는 키워드마다 우선순위 목록의 연결 상품을 자동으로 쓰고(목록에 없으면 '내 사주 첫 풀이'), 불러오기는 위에서 고른 상품을 씁니다. 저장만 하고, 에디터에는 [에디터에 넣기]를 눌렀을 때 들어갑니다.</div>
+          <div class="lbl" style="margin-top:10px">미리 만들기 (한 번에 최대 10개, Claude 사용)</div>
+          <textarea id="topic-batch-keywords" rows="3" style="width:100%;resize:vertical" placeholder="키워드를 줄바꿈이나 쉼표로 구분해 입력"></textarea>
+          <div style="display:flex;gap:7px;margin-top:6px;flex-wrap:wrap">
+            <button type="button" class="rfixbtn" id="topic-batch-fill">우선순위 10개 채우기</button>
+            <button type="button" class="rfixbtn" id="topic-batch-start">미리 만들기 시작</button>
+            <button type="button" class="rfixbtn" id="topic-batch-cancel" disabled>중단</button>
+          </div>
+          <div class="subnote" id="topic-batch-status" style="margin-top:6px"></div>
+          <div class="lbl" style="margin-top:12px">직접 쓴 원고 불러오기 (Claude 미사용)</div>
+          <textarea id="topic-import-text" rows="8" style="width:100%;resize:vertical" placeholder="제목: 인터넷사주, 처음 볼 때 확인할 3가지&#10;요약: (선택)&#10;&#10;첫 문단…&#10;&#10;## 소제목&#10;[사진: compat-1]   ← 사진 번호, 또는 [사진]&#10;본문 문단…&#10;&#10;> 인용구&#10;| 기준 | 설명 |&#10;|---|---|&#10;| 상담사 | 없음 |&#10;Q. 질문&#10;A. 답&#10;태그: #사주 #인터넷사주"></textarea>
+          <button type="button" class="rfixbtn" id="topic-import-save" style="margin-top:6px">불러와서 보관함에 저장</button>
+          <div class="subnote" id="topic-import-status" style="margin-top:6px"></div>
+          <div class="lbl" style="margin-top:12px">보관함 <button type="button" class="rfixbtn" id="topic-drafts-refresh" style="margin-left:auto">새로고침</button></div>
+          <div id="topic-drafts-list" class="subnote" style="margin-top:6px">원고를 불러옵니다.</div>
+        </details>
         <details class="topic-card" id="topic-perf-panel">
           <summary style="cursor:pointer;font-weight:800">📈 사주 탭 성과 추적</summary>
           <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px">
@@ -1057,20 +1075,114 @@
         if(result&&result.confirmRequired&&window.confirm(result.warning+' 계속 만들까요?')){ request.opts.confirmed=true; result=await window.api.generateTopic(request); }
         if(!result||!result.ok) throw new Error((result&&result.error)||'생성에 실패했습니다.');
         if(result.skipped||!result.post){ status.className='status on'; status.textContent=(result.holdReasons||['생성을 건너뛰었습니다.']).join(' / '); renderGenWarnings(result,status); return; }
-        var setTopicImageMode=function(mode){
-          var selector=mode==='search'?'#img-s':'#img-home'; var seg=document.querySelector(selector);
-          if(seg){ seg.querySelectorAll('.s').forEach(function(x){x.classList.remove('on');}); var mine=seg.querySelector('[data-img="mine"]'); if(mine) mine.classList.add('on'); }
-        };
-        var setTopicPhotos=function(files){ window._myPhotos=files; window._placePhotos=null; window._genType='saju'; };
         if(result.status==='hold'){
           status.className='status on'; status.textContent='발행 보류 — '+(result.holdReasons||[]).join(' / '); renderGenWarnings(result,status); window._genResult='hold:'+((result.holdReasons||[]).join(' / ')); return;
         }
-        await window.topicEditorDelivery.injectTopicPost({post:result.post,assets:result.assets,purpose:purpose,keyword:keyword,setPhotos:setTopicPhotos,setImageMode:setTopicImageMode,finishGen:finishGen});
+        await injectTopicResult(result,purpose,keyword);
         status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+(result.status==='review'?'검수 후 발행하세요':'원고 작성됨'); renderGenWarnings(result,status);
         window._genResult=result.status==='review'?'ok':'ok'; await refreshPerf();
       }catch(e){ status.className='status on'; status.textContent='오류: '+e.message; window._genResult='err:'+e.message; }
       finally{ window._topicStatusEl=null; button.disabled=false; }
     });
+    // ★생성 결과(또는 보관함 원고)를 에디터에 넣는다 — 캡처 사진을 "내 사진" 경로로 배치.
+    async function injectTopicResult(result,purpose,keyword){
+      var setTopicImageMode=function(mode){
+        var selector=mode==='search'?'#img-s':'#img-home'; var seg=document.querySelector(selector);
+        if(seg){ seg.querySelectorAll('.s').forEach(function(x){x.classList.remove('on');}); var mine=seg.querySelector('[data-img="mine"]'); if(mine) mine.classList.add('on'); }
+      };
+      var setTopicPhotos=function(files){ window._myPhotos=files; window._placePhotos=null; window._genType='saju'; };
+      window._genCtx=purpose==='search'?'search':'home'; window._topicTabActive=true;
+      await window.topicEditorDelivery.injectTopicPost({post:result.post,assets:result.assets,purpose:purpose,keyword:keyword,setPhotos:setTopicPhotos,setImageMode:setTopicImageMode,finishGen:finishGen});
+    }
+    // ★원고 보관함
+    var drafts=[], draftBusy=false;
+    var STATUS_LABEL={ready:'✅ 발행 준비',review:'🔍 검수 필요',hold:'⛔ 발행 보류',error:'❌ 생성 실패'};
+    function draftRequestBase(){ return {topicId:'saju',profileKey:profileSelect.value,purpose:byId('topic-purpose').value,productKey:productSelect.value}; }
+    function renderDrafts(){
+      var box=byId('topic-drafts-list'); if(!box) return;
+      if(!drafts.length){ box.textContent='보관된 원고가 없습니다.'; return; }
+      box.innerHTML=drafts.map(function(d){
+        var title=(d.result&&d.result.post&&d.result.post.title)||'(원고 없음)';
+        var reasons=(d.holdReasons||[]).concat(d.reviewReasons||[]).slice(0,3);
+        var when=String(d.updatedAt||d.createdAt||'').replace('T',' ').slice(0,16);
+        return '<div class="draft-row" data-id="'+esc(d.id)+'" style="border-top:1px solid #eef1f5;padding:8px 0">'
+          +'<div><b>'+esc(STATUS_LABEL[d.status]||d.status)+'</b> · '+esc(d.keyword)+' · '+(d.purpose==='home'?'홈판용':'검색용')+' · '+(d.source==='import'?'직접 작성':'미리 생성')+(d.injectedAt?' · 에디터에 넣음':'')+' · '+esc(when)+'</div>'
+          +'<div style="margin-top:2px">'+esc(title)+'</div>'
+          +(reasons.length?'<div style="color:#8b95a5;margin-top:2px">'+reasons.map(esc).join(' / ')+'</div>':'')
+          +'<div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">'
+          +(d.result&&d.result.post?'<button type="button" class="rfixbtn" data-act="edit">보기·수정</button><button type="button" class="rfixbtn" data-act="inject">에디터에 넣기</button>':'')
+          +'<button type="button" class="rfixbtn" data-act="delete">삭제</button></div>'
+          +'<div class="draft-editor" style="display:none;margin-top:6px"><textarea rows="12" style="width:100%;resize:vertical"></textarea>'
+          +'<button type="button" class="rfixbtn" data-act="save" style="margin-top:5px">수정 저장</button></div></div>';
+      }).join('');
+    }
+    async function refreshDrafts(){
+      try{ var r=await window.api.topicDraftsList('saju'); drafts=(r&&r.ok&&r.drafts)||[]; renderDrafts(); }
+      catch(e){ var box=byId('topic-drafts-list'); if(box) box.textContent='보관함을 불러오지 못했습니다: '+e.message; }
+    }
+    byId('topic-drafts-refresh').addEventListener('click',refreshDrafts);
+    byId('topic-batch-fill').addEventListener('click',function(){
+      if(!topicConfig) return; byId('topic-batch-keywords').value=(topicConfig.keywordPlan||[]).map(function(k){return k.keyword;}).join('\n');
+    });
+    var stopProgress=window.api.onTopicDraftsProgress(function(p){
+      var label=byId('topic-batch-status'); if(!label||!p) return;
+      if(p.phase==='start') label.textContent=(p.index+1)+'/'+p.total+' · "'+p.keyword+'" 원고를 만드는 중…';
+      else if(p.phase==='done'){ label.textContent=(p.index+1)+'/'+p.total+' · "'+p.keyword+'" '+(STATUS_LABEL[p.status]||p.status); refreshDrafts(); }
+      else if(p.phase==='skipped') label.textContent=(p.index+1)+'/'+p.total+' · "'+p.keyword+'" 건너뜀 — '+(p.reasons||[]).join(' / ');
+    });
+    byId('topic-batch-start').addEventListener('click',async function(){
+      var start=this, cancel=byId('topic-batch-cancel'), label=byId('topic-batch-status');
+      var text=byId('topic-batch-keywords').value||'';
+      if(!text.trim()){ label.textContent='키워드를 입력해 주세요.'; return; }
+      if(!profileSelect.value){ label.textContent='블로그 프로필을 선택해 주세요.'; return; }
+      var req=draftRequestBase(); req.keywords=text; req.productKey='';
+      start.disabled=true; cancel.disabled=false; label.textContent='미리 만들기를 시작합니다…';
+      try{
+        var r=await window.api.topicDraftsGenerate(req); if(!r||!r.ok) throw new Error((r&&r.error)||'미리 만들기에 실패했습니다.');
+        var s=r.summary||{};
+        var stop=s.stopped==='token-limit'?' · Claude 사용량 한도로 중단':s.stopped==='search-blocked'?' · 네이버 검색 제한으로 중단':s.stopped==='cancelled'?' · 사용자가 중단':'';
+        label.textContent='끝 — 만듦 '+(s.made||0)+' · 보류 '+(s.held||0)+' · 건너뜀 '+(s.skipped||0)+' · 실패 '+(s.failed||0)+(s.dropped?' · 10개 초과 '+s.dropped+'개 제외':'')+stop;
+      }catch(e){ label.textContent='오류: '+e.message; }
+      finally{ start.disabled=false; cancel.disabled=true; await refreshDrafts(); }
+    });
+    byId('topic-batch-cancel').addEventListener('click',async function(){ this.disabled=true; await window.api.topicDraftsCancel(); byId('topic-batch-status').textContent='지금 만드는 원고까지 끝내고 멈춥니다…'; });
+    byId('topic-import-save').addEventListener('click',async function(){
+      var button=this, label=byId('topic-import-status'); var text=byId('topic-import-text').value||''; var keyword=(keywordInput.value||'').trim();
+      if(!text.trim()){ label.textContent='원고를 붙여넣어 주세요.'; return; }
+      if(!keyword){ label.textContent='위 키워드 칸에 이 원고의 키워드를 입력해 주세요.'; return; }
+      if(!profileSelect.value){ label.textContent='블로그 프로필을 선택해 주세요.'; return; }
+      var req=draftRequestBase(); req.keyword=keyword; req.text=text;
+      button.disabled=true; label.textContent='원고를 나누고 검사하는 중…';
+      try{
+        var r=await window.api.topicDraftsImport(req); if(!r||!r.ok) throw new Error((r&&r.error)||'불러오지 못했습니다.');
+        label.textContent='보관함에 저장했습니다 — '+(STATUS_LABEL[r.draft.status]||r.draft.status); byId('topic-import-text').value=''; await refreshDrafts();
+      }catch(e){ label.textContent='오류: '+e.message; }
+      finally{ button.disabled=false; }
+    });
+    byId('topic-drafts-list').addEventListener('click',async function(ev){
+      var btn=ev.target.closest('button[data-act]'); if(!btn||draftBusy) return;
+      var row=btn.closest('.draft-row'); var id=row&&row.getAttribute('data-id'); var d=drafts.find(function(x){return x.id===id;}); if(!d) return;
+      var act=btn.getAttribute('data-act');
+      if(act==='edit'){ var ed=row.querySelector('.draft-editor'); var open=ed.style.display==='none'; ed.style.display=open?'block':'none'; if(open) ed.querySelector('textarea').value=d.text||''; return; }
+      if(act==='delete'){ if(!window.confirm('"'+d.keyword+'" 원고를 보관함에서 삭제할까요?')) return; await window.api.topicDraftsDelete(id); await refreshDrafts(); return; }
+      draftBusy=true; btn.disabled=true;
+      try{
+        if(act==='save'){
+          var r=await window.api.topicDraftsUpdate(id,row.querySelector('.draft-editor textarea').value||''); if(!r||!r.ok) throw new Error((r&&r.error)||'저장하지 못했습니다.');
+          await refreshDrafts(); return;
+        }
+        if(act==='inject'){
+          if(d.status==='hold'&&!window.confirm('발행 보류 원고입니다('+(d.holdReasons||[]).join(' / ')+'). 그래도 에디터에 넣을까요?')) return;
+          status.className='status on'; status.textContent='보관함 원고를 에디터에 넣는 중… ("'+d.keyword+'")'; window._topicStatusEl=status;
+          await injectTopicResult(d.result,d.purpose,d.keyword);
+          await window.api.topicDraftsMarkInjected(id);
+          status.innerHTML='완료! <b>'+esc(d.result.post.title||'')+'</b> — 보관함 원고를 넣었습니다. 검수 후 발행하세요.'; renderGenWarnings(d.result,status);
+          await refreshDrafts();
+        }
+      }catch(e){ window.alert('오류: '+e.message); }
+      finally{ draftBusy=false; btn.disabled=false; window._topicStatusEl=null; }
+    });
+    refreshDrafts();
     Promise.all([window.api.topicConfig('saju'),refreshProfiles(),refreshAssets(),refreshPerf()]).then(function(results){
       var configResult=results[0]; if(configResult&&configResult.ok){ topicConfig=configResult.topic; renderProducts(); renderKeywords(); }
     }).catch(function(){});

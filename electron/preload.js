@@ -16,6 +16,19 @@ contextBridge.exposeInMainWorld('api', {
   generatePost: (type, keyword, tone, style, extras) =>
     ipcRenderer.invoke('generate:post', { type, keyword, tone, style, ...(extras || {}) }),
   generateTopic: (request) => ipcRenderer.invoke('generate:topic', request || {}),
+  // 원고 보관함 — 미리 생성·불러오기·수정·삭제·에디터 넣기 표시
+  topicDraftsList: (topicId) => ipcRenderer.invoke('topicDrafts:list', topicId || 'saju'),
+  topicDraftsGenerate: (request) => ipcRenderer.invoke('topicDrafts:generate', request || {}),
+  topicDraftsCancel: () => ipcRenderer.invoke('topicDrafts:cancel'),
+  topicDraftsImport: (request) => ipcRenderer.invoke('topicDrafts:import', request || {}),
+  topicDraftsUpdate: (id, text) => ipcRenderer.invoke('topicDrafts:update', { id, text }),
+  topicDraftsDelete: (id) => ipcRenderer.invoke('topicDrafts:delete', { id }),
+  topicDraftsMarkInjected: (id) => ipcRenderer.invoke('topicDrafts:markInjected', { id }),
+  onTopicDraftsProgress: (callback) => {
+    const listener = (_event, payload) => { try { callback(payload); } catch (_) {} };
+    ipcRenderer.on('topicDrafts:progress', listener);
+    return () => ipcRenderer.removeListener('topicDrafts:progress', listener);
+  },
   topicConfig: (topicId) => ipcRenderer.invoke('topic:config', topicId || 'saju'),
   topicProfilesGet: (topicId) => ipcRenderer.invoke('topicProfiles:get', topicId || 'saju'),
   topicProfilesSave: (profiles) => ipcRenderer.invoke('topicProfiles:save', profiles || []),
