@@ -24,7 +24,7 @@ function normalizeTitle(title) {
     .replace(/[\s\p{P}\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D]/gu, '');
 }
 
-function createEntry({ keyword, topic, intent, status, title, generatedAt, version } = {}) {
+function createEntry({ keyword, topic, intent, status, title, generatedAt, version, blogKey, productKey } = {}) {
   const at = generatedAt || new Date().toISOString();
   const timestamp = toTime(at);
   const ms = Number.isFinite(timestamp) ? timestamp : Date.now();
@@ -44,6 +44,8 @@ function createEntry({ keyword, topic, intent, status, title, generatedAt, versi
     publishedAt: null,
     linkedBy: null,
     checks: [],
+    ...(blogKey ? { blogKey: String(blogKey) } : {}),
+    ...(productKey ? { productKey: String(productKey) } : {}),
   };
 }
 
@@ -129,12 +131,19 @@ function findRank(blogRefs, blogId, logNo) {
 
 function addCheck(entry, check = {}) {
   const checks = Array.isArray(entry && entry.checks) ? entry.checks.map((item) => ({ ...item })) : [];
+  const site = check.siteFound && typeof check.siteFound === 'object' ? {
+    blockName: String(check.siteFound.blockName || ''),
+    positionInBlock: check.siteFound.positionInBlock == null ? null : Number(check.siteFound.positionInBlock),
+  } : null;
   const next = {
     at: check.at || new Date().toISOString(),
     dueDay: Number(check.dueDay),
-    blogTabRank: check.blogTabRank == null ? null : Number(check.blogTabRank),
-    blogTabObserved: !!check.blogTabObserved,
-    inIntegrated: !!check.inIntegrated,
+    found: !!check.found,
+    blockName: check.blockName ? String(check.blockName) : '',
+    blockOrder: check.blockOrder == null ? null : Number(check.blockOrder),
+    positionInBlock: check.positionInBlock == null ? null : Number(check.positionInBlock),
+    overallDocPosition: check.overallDocPosition == null ? null : Number(check.overallDocPosition),
+    siteFound: site,
     measured: !!check.measured,
     reason: check.reason ? String(check.reason) : '',
   };
@@ -149,30 +158,30 @@ function emptySummary() {
 }
 
 function summarizeGroup(entries) {
-  const ranks = [];
   let linked = 0;
-  let checked = 0;
+  const checks = [];
+  const blockDistribution = {};
   for (const entry of entries) {
     if (entry.url) linked++;
-    const checks = Array.isArray(entry.checks) ? entry.checks : [];
-    if (checks.length) checked++;
-    const measuredRanks = checks
-      .filter((check) => check && check.measured && check.blogTabRank != null && Number.isFinite(Number(check.blogTabRank)))
-      .map((check) => Number(check.blogTabRank));
-    if (measuredRanks.length) ranks.push(Math.min(...measuredRanks));
+    checks.push(...(Array.isArray(entry.checks) ? entry.checks : []));
   }
-  ranks.sort((a, b) => a - b);
-  const middle = Math.floor(ranks.length / 2);
-  const medianBestRank = !ranks.length ? null : ranks.length % 2
-    ? ranks[middle]
-    : (ranks[middle - 1] + ranks[middle]) / 2;
+  const measuredChecks = checks.filter((check) => check && check.measured);
+  const foundChecks = measuredChecks.filter((check) => check.found === true || (check.found == null && check.inIntegrated === true));
+  const withinFirstFive = foundChecks.filter((check) => Number(check.blockOrder) >= 1 && Number(check.blockOrder) <= 5).length;
+  for (const check of foundChecks) {
+    const name = String(check.blockName || (check.inIntegrated ? '이전 통합검색' : '기타'));
+    blockDistribution[name] = (blockDistribution[name] || 0) + 1;
+  }
   return {
     tracked: entries.length,
     linked,
-    checked,
-    found: ranks.length,
-    top10: ranks.filter((rank) => rank <= 10).length,
-    medianBestRank,
+    checked: checks.length,
+    measured: measuredChecks.length,
+    found: foundChecks.length,
+    withinFirstFive,
+    exposureRate: measuredChecks.length ? withinFirstFive / measuredChecks.length : 0,
+    siteFound: measuredChecks.filter((check) => check.siteFound).length,
+    blockDistribution,
   };
 }
 
@@ -190,9 +199,19 @@ function summarize(entries) {
     if (!byStatus[status]) byStatus[status] = [];
     byStatus[status].push(entry);
   }
+  const byProduct = {};
+  const byBlog = {};
+  for (const entry of list) {
+    const product = String(entry.productKey || '미선택');
+    const blog = String(entry.blogKey || entry.blogId || '미연결');
+    (byProduct[product] || (byProduct[product] = [])).push(entry);
+    (byBlog[blog] || (byBlog[blog] = [])).push(entry);
+  }
   return {
     byIntent: Object.fromEntries(Object.entries(byIntent).map(([key, group]) => [key, summarizeGroup(group)])),
     byStatus: Object.fromEntries(Object.entries(byStatus).map(([key, group]) => [key, summarizeGroup(group)])),
+    byProduct: Object.fromEntries(Object.entries(byProduct).map(([key, group]) => [key, summarizeGroup(group)])),
+    byBlog: Object.fromEntries(Object.entries(byBlog).map(([key, group]) => [key, summarizeGroup(group)])),
   };
 }
 

@@ -175,7 +175,7 @@ test('tracker matches exact and close titles once, excluding posts published bef
 
 test('tracker validates manual links, due checks, ranks, replacement, and summaries', () => {
   const publishedAt = Date.UTC(2026, 0, 1);
-  const base = tracker.createEntry({ keyword: '사주 뜻', topic: 'daily', intent: 'definition', status: 'ready', title: '사주 뜻 풀이', generatedAt: '2025-12-30T00:00:00Z' });
+  const base = tracker.createEntry({ keyword: '사주 뜻', topic: 'saju', intent: 'definition', status: 'ready', title: '사주 뜻 풀이', generatedAt: '2025-12-30T00:00:00Z', blogKey: 'saju-a', productKey: 'compat' });
   const linked = tracker.linkManually({ ...base, publishedAt: new Date(publishedAt).toISOString() }, 'https://m.blog.naver.com/nomadyoon/224012345678');
   assert.equal(linked.blogId, 'nomadyoon');
   assert.equal(linked.logNo, '224012345678');
@@ -189,15 +189,19 @@ test('tracker validates manual links, due checks, ranks, replacement, and summar
   ], 'nomadyoon', '224012345678'), 2);
   assert.equal(tracker.findRank([], 'nomadyoon', '0'), null);
 
-  const firstCheck = tracker.addCheck(linked, { at: '2026-01-29T00:00:00Z', dueDay: 1, blogTabRank: 12, measured: true });
-  const replaced = tracker.addCheck(firstCheck, { at: '2026-01-30T00:00:00Z', dueDay: 1, blogTabRank: 4, measured: true });
+  const firstCheck = tracker.addCheck(linked, { at: '2026-01-29T00:00:00Z', dueDay: 1, found: true, blockName: '관련문서', blockOrder: 4, positionInBlock: 2, overallDocPosition: 8, siteFound: { blockName: '브랜드 콘텐츠', positionInBlock: 1 }, measured: true });
+  const replaced = tracker.addCheck(firstCheck, { at: '2026-01-30T00:00:00Z', dueDay: 1, found: true, blockName: '관련문서', blockOrder: 2, positionInBlock: 1, overallDocPosition: 4, siteFound: { blockName: '브랜드 콘텐츠', positionInBlock: 1 }, measured: true });
   assert.equal(replaced.checks.length, 1);
-  assert.equal(replaced.checks[0].blogTabRank, 4);
+  assert.equal(replaced.checks[0].found, true);
+  assert.equal(replaced.checks[0].blockOrder, 2);
+  assert.deepEqual(replaced.checks[0].siteFound, { blockName: '브랜드 콘텐츠', positionInBlock: 1 });
 
-  const second = { ...linked, id: linked.id + '-2', intent: 'howto', statusAtGen: 'review', checks: [{ dueDay: 3, measured: true, blogTabRank: 12 }] };
+  const second = { ...linked, id: linked.id + '-2', intent: 'howto', statusAtGen: 'review', productKey: 'intro', blogKey: 'saju-b', checks: [{ dueDay: 3, measured: true, found: false, blockOrder: null, siteFound: null }] };
   const summary = tracker.summarize([replaced, second]);
-  assert.deepEqual(summary.byIntent.definition, { tracked: 1, linked: 1, checked: 1, found: 1, top10: 1, medianBestRank: 4 });
-  assert.deepEqual(summary.byStatus.review, { tracked: 1, linked: 1, checked: 1, found: 1, top10: 0, medianBestRank: 12 });
+  assert.deepEqual(summary.byIntent.definition, { tracked: 1, linked: 1, checked: 1, measured: 1, found: 1, withinFirstFive: 1, exposureRate: 1, siteFound: 1, blockDistribution: { '관련문서': 1 } });
+  assert.deepEqual(summary.byStatus.review, { tracked: 1, linked: 1, checked: 1, measured: 1, found: 0, withinFirstFive: 0, exposureRate: 0, siteFound: 0, blockDistribution: {} });
+  assert.deepEqual(summary.byProduct.compat, summary.byIntent.definition);
+  assert.deepEqual(summary.byBlog['saju-a'], summary.byIntent.definition);
 });
 
 test('health reports a blocked source without a markup-change message', () => {

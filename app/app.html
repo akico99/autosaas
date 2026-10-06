@@ -34,6 +34,15 @@
   .resizer{flex:0 0 6px;cursor:col-resize;background:#e3e8f0;transition:background .12s}
   .resizer:hover,.resizer.drag{background:var(--blue,#2f6fed)}
   .tabs{display:flex;border-bottom:1px solid var(--line);flex:0 0 auto;padding:0 8px}
+  .topic-nav{display:flex;gap:7px;padding:10px 12px;border-bottom:1px solid var(--line);background:#f8fafc;flex:0 0 auto}
+  .topic-nav button{border:1px solid #d7dfeb;background:#fff;color:var(--ink2);border-radius:8px;padding:9px 12px;font-weight:800;cursor:pointer}
+  .topic-nav button.on{color:#fff;background:#385ab8;border-color:#385ab8}
+  .topic-nav button:disabled{color:#9aa3b2;background:#f2f4f7;cursor:not-allowed}
+  .topic-pane{flex:1;overflow:auto;padding:14px;background:#f5f7fb}
+  .topic-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;margin-bottom:10px}
+  .topic-chip{display:inline-flex;align-items:center;gap:5px;margin:3px;padding:6px 9px;border:1px solid #dce3ed;border-radius:18px;background:#fff;font-size:11px;cursor:pointer}
+  .topic-chip:hover{border-color:#7994d2;background:#f4f7ff}
+  .legacy-group{display:none;flex:1;min-height:0;flex-direction:column}
   .tab{flex:1;text-align:center;padding:14px 0;font-size:14px;font-weight:800;color:var(--ink3);cursor:pointer;
     border-bottom:2.5px solid transparent}
   .tab.on{color:var(--blue);border-bottom-color:var(--blue)}
@@ -282,6 +291,57 @@
 
     <div class="resizer" id="panel-resizer" title="드래그해서 패널 너비 조절"></div>
     <div class="panel" id="right-panel">
+      <div class="topic-nav" id="topic-nav">
+        <button type="button" id="topic-saju-tab" class="on">사주보는 수달</button>
+        <button type="button" id="topic-muju-tab" disabled title="준비 중">무주스키샵 (준비 중)</button>
+        <button type="button" id="topic-legacy-tab">구버전 ▾</button>
+      </div>
+      <div class="topic-pane" id="topic-saju-pane">
+        <div class="topic-card">
+          <div class="lbl">블로그 프로필 <button type="button" class="rfixbtn" id="topic-profile-manage" style="margin-left:auto">프로필 관리</button></div>
+          <select id="topic-profile" style="width:100%;margin-top:7px"></select>
+        </div>
+        <div class="topic-card">
+          <div class="lbl">우선순위 키워드</div>
+          <div class="subnote">키워드를 누르면 연결 상품과 블로그 진입 가능성을 선택합니다.</div>
+          <div id="topic-keyword-chips" style="margin:6px -3px"></div>
+          <input id="topic-keyword" type="text" placeholder="키워드 직접 입력" style="width:100%;margin-top:6px">
+        </div>
+        <div class="topic-card">
+          <div class="lbl">용도와 연결 상품</div>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <select id="topic-purpose"><option value="search">검색용</option><option value="home">홈판용</option></select>
+            <select id="topic-product" style="flex:1;min-width:180px"></select>
+          </div>
+        </div>
+        <div class="topic-card">
+          <div class="lbl">사진</div>
+          <div class="subnote" id="topic-assets-status">캡처 묶음을 확인하는 중입니다.</div>
+          <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+            <button type="button" class="rfixbtn" id="topic-capture">사이트 캡처 갱신</button>
+            <button type="button" class="rfixbtn" id="topic-add-photos">사진 직접 추가</button>
+          </div>
+        </div>
+        <div class="topic-card">
+          <button type="button" class="rsavebtn" id="topic-generate" style="width:100%">글 만들기</button>
+          <div class="status" id="topic-status"></div>
+        </div>
+        <details class="topic-card" id="topic-perf-panel">
+          <summary style="cursor:pointer;font-weight:800">📈 사주 탭 성과 추적</summary>
+          <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px">
+            <input id="topic-perf-blog-id" type="text" placeholder="네이버 블로그 ID" style="flex:1;min-width:130px">
+            <button type="button" class="rfixbtn" id="topic-perf-sync">발행 글 연결</button>
+            <button type="button" class="rfixbtn" id="topic-perf-check">통합검색 확인 (최대 6개)</button>
+          </div>
+          <div class="subnote" style="margin-top:5px">통합검색 관찰은 버튼을 눌렀을 때만 실행합니다.</div>
+          <button type="button" class="rfixbtn" id="topic-serp-analyze" style="margin-top:7px">주제 분석 갱신</button>
+          <button type="button" class="rfixbtn" id="topic-perf-refresh" style="margin-top:8px">기록 새로고침</button>
+          <div id="topic-perf-summary" class="subnote" style="white-space:pre-line;margin-top:8px"></div>
+          <div id="topic-perf-entries" class="subnote" style="margin-top:8px">생성 기록을 불러옵니다.</div>
+          <div id="topic-perf-status" class="subnote" style="margin-top:6px"></div>
+        </details>
+      </div>
+      <div id="legacy-group" class="legacy-group">
       <div class="tabs">
         <div class="tab on" data-tab="home">홈판용</div>
         <div class="tab" data-tab="search">검색용</div>
@@ -764,14 +824,14 @@
                   <label for="perf-blog-id" style="font-size:12px;font-weight:700">블로그 ID</label>
                   <input id="perf-blog-id" type="text" style="width:150px" placeholder="네이버 블로그 ID">
                   <button type="button" id="perf-sync" class="rfixbtn">발행 글 연결</button>
-                  <button type="button" id="perf-check" class="rfixbtn">순위 확인 (대상 0개)</button>
+                  <button type="button" id="perf-check" class="rfixbtn">통합검색 확인 (대상 0개)</button>
                 </div>
-                <div class="subnote" style="margin-top:7px">순위는 비로그인·PC 환경에서 관찰한 블로그 탭 1페이지 기준이에요. 개인화로 실제와 다를 수 있어요. 순위 확인은 한 번에 최대 6개만 해요.</div>
+                <div class="subnote" style="margin-top:7px">비로그인·PC 통합검색의 블록과 문서 위치를 관찰해요. 개인화로 실제와 다를 수 있어요. 한 번에 최대 6개를 확인해요.</div>
                 <div id="perf-blocked" style="display:none;margin-top:8px;padding:8px 10px;border:1px solid #efb2b2;border-radius:8px;background:#fff1f1;color:#a52626;font-size:12px;line-height:1.5"></div>
                 <div id="perf-status" class="subnote" style="margin-top:7px"></div>
                 <div style="overflow:auto;margin-top:8px">
                   <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:680px">
-                    <thead><tr style="background:#f5f7fb"><th style="text-align:left;padding:6px">키워드</th><th style="padding:6px">의도</th><th style="padding:6px">생성 상태</th><th style="padding:6px">발행일</th><th style="padding:6px">최근 블로그 탭 순위</th><th style="text-align:left;padding:6px">확인 이력</th><th style="text-align:left;padding:6px">발행 글 연결</th></tr></thead>
+                    <thead><tr style="background:#f5f7fb"><th style="text-align:left;padding:6px">키워드</th><th style="padding:6px">의도</th><th style="padding:6px">생성 상태</th><th style="padding:6px">발행일</th><th style="padding:6px">최근 통합검색 위치</th><th style="text-align:left;padding:6px">확인 이력</th><th style="text-align:left;padding:6px">발행 글 연결</th></tr></thead>
                     <tbody id="perf-entries"><tr><td colspan="7" style="padding:10px;color:#8b95a5">패널을 열면 최근 기록을 불러와요.</td></tr></tbody>
                   </table>
                 </div>
@@ -784,17 +844,19 @@
 
       </div>
     </div>
+      </div>
   </div>
 
 
 
+<script src="../src/topics/editorDelivery.js"></script>
 <script>
   const byId = (id) => document.getElementById(id);
   const keywordToolOnly = new URLSearchParams(window.location.search).get('mode') === 'keywords';
   if (keywordToolOnly) document.body.classList.add('keyword-tool-only', 'keyword-tool-open');
   // ★현재 생성 컨텍스트(home/search) — 진행 안내를 "그 탭 하단"에 뜨게. (검색용 진행이 홈판에 뜨던 문제)
   window._genCtx = 'home';
-  function _curSt(){ return byId(window._genCtx==='search'?'status-search':'status-home') || byId('status-home'); }
+  function _curSt(){ return window._topicStatusEl || byId(window._genCtx==='search'?'status-search':'status-home') || byId('status-home'); }
   // ★"오늘 만든 글 제목" 목록 — 홈판/검색용 각 탭 하단에 표시. 제목 자동입력이 실패한 글은 빨간 표시 → 사용자가 [복사]해서 직접 넣게.
   window._refreshTodayTitles = async function(){
     try{
@@ -825,6 +887,7 @@
   const all = (s) => Array.from(document.querySelectorAll(s));
 
   all('.tab').forEach((t) => t.addEventListener('click', () => {
+    window._topicTabActive=false;
     all('.tab').forEach((x) => x.classList.remove('on'));
     all('.pane').forEach((x) => x.classList.remove('on'));
     t.classList.add('on'); byId('pane-' + t.dataset.tab).classList.add('on');
@@ -837,6 +900,181 @@
       else if(t.dataset.tab==='search'){ var ts=document.querySelector('#img-s [data-img="thumb"]'); if(ts && ts.classList.contains('on')){ window._thumbEditorToSearch(true); try{ window._openThumbEditor&&window._openThumbEditor(); }catch(e){} } }
     }
   }));
+
+  // 주제 탭 1: 사주보는 수달. 기존 홈판/검색 패널은 구버전 그룹 안에서 기존 이벤트를 그대로 사용한다.
+  (function initSajuTopicTab(){
+    var topicPane=byId('topic-saju-pane'), legacy=byId('legacy-group');
+    var topicTab=byId('topic-saju-tab'), legacyTab=byId('topic-legacy-tab');
+    var profileSelect=byId('topic-profile'), productSelect=byId('topic-product'), keywordInput=byId('topic-keyword');
+    var status=byId('topic-status'), assets=[], topicConfig=null, profiles=[];
+    window._topicTabActive=true;
+    function showTopic(){
+      if(legacy) legacy.style.display='none'; if(topicPane) topicPane.style.display='block';
+      topicTab.classList.add('on'); legacyTab.classList.remove('on'); window._topicTabActive=true;
+      window._genCtx='home'; window._topicStatusEl=null;
+      try{ if(typeof window._refreshThumbSaved==='function') window._refreshThumbSaved(); }catch(e){}
+    }
+    function showLegacy(){
+      if(topicPane) topicPane.style.display='none'; if(legacy) legacy.style.display='flex';
+      topicTab.classList.remove('on'); legacyTab.classList.add('on'); window._topicTabActive=false;
+      window._genCtx=(document.querySelector('.tab.on')&&document.querySelector('.tab.on').dataset.tab==='search')?'search':'home';
+      try{ if(typeof window._refreshThumbSaved==='function') window._refreshThumbSaved(); }catch(e){}
+    }
+    topicTab.addEventListener('click',showTopic); legacyTab.addEventListener('click',showLegacy);
+    byId('topic-muju-tab').addEventListener('click',function(){ return; });
+    function renderProfiles(selected){
+      if(!profileSelect) return;
+      profileSelect.innerHTML=profiles.map(function(p){ return '<option value="'+esc(p.key)+'">'+esc(p.name)+(p.blogId?' · '+esc(p.blogId):' · 블로그 ID 입력 필요')+'</option>'; }).join('');
+      if(selected&&profiles.some(function(p){return p.key===selected;})) profileSelect.value=selected;
+    }
+    function renderProducts(selected){
+      if(!productSelect||!topicConfig) return;
+      productSelect.innerHTML=(topicConfig.products||[]).map(function(p){ return '<option value="'+esc(p.key)+'">'+esc(p.label)+(p.price?' · '+esc(p.price):' · 무료')+'</option>'; }).join('');
+      if(selected) productSelect.value=selected;
+    }
+    function renderKeywords(){
+      var box=byId('topic-keyword-chips'); if(!box||!topicConfig) return;
+      box.innerHTML=(topicConfig.keywordPlan||[]).map(function(item,index){
+        var slot={high:'높음',mid:'보통',low:'낮음'}[item.blogSlot]||item.blogSlot;
+        var product=(topicConfig.products||[]).find(function(p){return p.key===item.product;});
+        return '<button type="button" class="topic-chip" data-index="'+index+'"><b>'+esc(item.keyword)+'</b><span>'+esc(product?product.label:item.product)+'</span><span>진입 '+esc(slot)+'</span></button>';
+      }).join('');
+      box.querySelectorAll('.topic-chip').forEach(function(chip){ var item=topicConfig.keywordPlan[Number(chip.dataset.index)]; chip.title=String(item.serpNote||''); chip.addEventListener('click',function(){ keywordInput.value=item.keyword; productSelect.value=item.product; }); });
+    }
+    keywordInput.addEventListener('input',function(){
+      var item=(topicConfig&&topicConfig.keywordPlan||[]).find(function(plan){return plan.keyword===keywordInput.value.trim();});
+      if(item) productSelect.value=item.product;
+    });
+    async function refreshAssets(){
+      try{
+        var r=await window.api.topicAssetsList('saju'); assets=r&&r.ok&&Array.isArray(r.items)?r.items:[];
+        var captureCount=r&&r.captureCount||0, customCount=Math.max(0,assets.length-captureCount);
+        var stamp=r&&r.capturedAt?new Date(r.capturedAt).toLocaleDateString():'캡처 없음';
+        byId('topic-assets-status').textContent=stamp+' · 사이트 '+captureCount+'장 · 직접 추가 '+customCount+'장';
+      }catch(e){ byId('topic-assets-status').textContent='사진 목록을 불러오지 못했습니다.'; }
+    }
+    async function refreshPerf(){
+      var box=byId('topic-perf-entries'); if(!box) return;
+      try{
+        var r=await window.api.topicPerformance('saju'), entries=r&&r.entries||[];
+        var summaryBox=byId('topic-perf-summary'), summary=r&&r.summary||{};
+        if(summaryBox){
+          var groups=[['의도별',summary.byIntent||{}],['상품별',summary.byProduct||{}],['블로그별',summary.byBlog||{}]];
+          summaryBox.textContent=groups.map(function(group){
+            var lines=Object.keys(group[1]).sort().map(function(key){var s=group[1][key]||{},dist=Object.keys(s.blockDistribution||{}).map(function(name){return name+' '+s.blockDistribution[name];}).join(', ');return key+': 앞 5개 블록 '+Number(s.withinFirstFive||0)+' / 관찰 '+Number(s.measured||0)+' ('+Math.round(Number(s.exposureRate||0)*100)+'%) · 사이트 '+Number(s.siteFound||0)+(dist?' · '+dist:'');});
+            return group[0]+' — '+(lines.join(' / ')||'기록 없음');
+          }).join('\n');
+        }
+        box.innerHTML=entries.length?entries.map(function(item){
+          var value=esc(item.url||'').replace(/"/g,'&quot;');
+          var checks=Array.isArray(item.checks)?item.checks.slice().sort(function(a,b){return (Date.parse(b.at)||0)-(Date.parse(a.at)||0);}):[];
+          var latest=checks[0], observed=latest?(latest.found===undefined?(latest.inIntegrated?'이전 통합검색에서 노출됨':latest.blogTabObserved?'이전 확인 기록':'통합검색 미측정'):(latest.measured?(latest.found?'통합검색 '+esc(latest.blockName||'')+' '+Number(latest.positionInBlock||0)+'위':'통합검색 결과에서 글 미노출'):'통합검색 미측정')):'';
+          return '<div style="padding:6px 0;border-top:1px solid #edf0f5"><b>'+esc(item.keyword||'')+'</b> · '+esc(item.productKey||'')+' · '+esc(item.statusAtGen||'')+'<br><span>'+esc(item.titleAtGen||'')+'</span>'
+            +(observed?'<br><span>'+observed+'</span>':'')
+            +(item.url?'<br><a href="'+value+'" target="_blank" rel="noreferrer">발행 글 보기</a>':'<div style="display:flex;gap:5px;margin-top:4px"><input data-topic-url="'+esc(item.id)+'" type="url" placeholder="발행 글 주소" style="flex:1;min-width:0"><button type="button" data-topic-link="'+esc(item.id)+'" class="rfixbtn">주소 연결</button></div>')+'</div>';
+        }).join(''):'아직 생성 기록이 없습니다.';
+        box.querySelectorAll('[data-topic-link]').forEach(function(button){ button.addEventListener('click',async function(){
+          var id=button.getAttribute('data-topic-link'), input=box.querySelector('[data-topic-url="'+id+'"]');
+          try{ var linked=await window.api.perfLink(id,input&&input.value||''); if(!linked||!linked.ok) throw new Error((linked&&linked.error)||'주소를 연결하지 못했습니다.'); await refreshPerf(); }
+          catch(e){ var label=byId('topic-perf-status'); if(label) label.textContent='주소 연결 오류: '+e.message; }
+        }); });
+      }catch(e){ box.textContent='성과 기록을 읽지 못했습니다.'; }
+    }
+    async function refreshProfiles(selected){
+      try{ var r=await window.api.topicProfilesGet('saju'); profiles=r&&r.ok&&Array.isArray(r.profiles)?r.profiles:[]; renderProfiles(selected); }
+      catch(e){ profiles=[]; renderProfiles(); }
+      syncBlogId();
+    }
+    function syncBlogId(){ var profile=profiles.find(function(p){return p.key===profileSelect.value;}); if(profile&&byId('topic-perf-blog-id')) byId('topic-perf-blog-id').value=profile.blogId||''; }
+    profileSelect.addEventListener('change',syncBlogId);
+    function editProfile(profile){
+      return {
+        key:profile.key, topicId:'saju', name:window.prompt('프로필 이름',profile.name)||profile.name,
+        blogId:window.prompt('네이버 블로그 ID',profile.blogId||'')||'',
+        persona:window.prompt('글쓴이 설명',profile.persona||'')||'',
+        focus:window.prompt('집중 분야',profile.focus||'')||'',
+        toneHint:window.prompt('말투 힌트',profile.toneHint||'')||'',
+        frameColor:window.prompt('사진 테두리 색상 (예: #e9dfcf)',profile.frameColor||'#e9dfcf')||'#e9dfcf',
+        createdAt:profile.createdAt||new Date().toISOString()
+      };
+    }
+    byId('topic-profile-manage').addEventListener('click',async function(){
+      var choice=window.prompt('프로필 관리: 추가 / 수정 / 삭제 중 입력해 주세요.');
+      if(!choice) return;
+      var selected=profiles.find(function(p){return p.key===profileSelect.value;});
+      if(choice==='삭제'&&selected){ if(!window.confirm('“'+selected.name+'” 프로필을 삭제할까요?')) return; profiles=profiles.filter(function(p){return p.key!==selected.key;}); }
+      else if(choice==='수정'&&selected){ profiles=profiles.map(function(p){return p.key===selected.key?editProfile(p):p;}); }
+      else if(choice==='추가'){
+        var name=window.prompt('새 프로필 이름'); if(!name) return;
+        var base={key:'saju-'+Date.now().toString(36),topicId:'saju',name:name,blogId:'',persona:'사주를 쉽게 설명하는 운영자',focus:'기초 명리·사주풀이',toneHint:'차분한 설명체',frameColor:'#e9dfcf',createdAt:new Date().toISOString()};
+        profiles.push(editProfile(base));
+      }
+      var saved=await window.api.topicProfilesSave(profiles); if(!saved||!saved.ok){ window.alert((saved&&saved.error)||'프로필 저장에 실패했습니다.'); return; }
+      profiles=saved.profiles||profiles; renderProfiles(selected&&selected.key);
+    });
+    byId('topic-capture').addEventListener('click',async function(){
+      var button=this; button.disabled=true; byId('topic-assets-status').textContent='사이트 화면 캡처 중…';
+      try{ var r=await window.api.topicAssetsCapture('saju'); if(!r||!r.ok) throw new Error((r&&r.error)||'캡처에 실패했습니다.'); await refreshAssets(); byId('topic-assets-status').textContent+=' · 캡처 완료'; }
+      catch(e){ byId('topic-assets-status').textContent='캡처 실패: '+e.message; } finally{ button.disabled=false; }
+    });
+    byId('topic-add-photos').addEventListener('click',async function(){
+      var caption=window.prompt('사진 설명 (예: 리포트 화면, 수달 일러스트)','')||'';
+      var tagText=window.prompt('태그를 쉼표로 입력 (예: compat, 재회)','')||'';
+      try{ var r=await window.api.topicAssetsAddCustom({topicId:'saju',caption:caption,tags:tagText.split(',').map(function(x){return x.trim();}).filter(Boolean)}); if(!r||!r.ok) throw new Error((r&&r.error)||'사진을 추가하지 못했습니다.'); await refreshAssets(); }
+      catch(e){ window.alert('사진 추가 실패: '+e.message); }
+    });
+    byId('topic-perf-refresh').addEventListener('click',refreshPerf);
+    byId('topic-perf-sync').addEventListener('click',async function(){
+      var blogId=(byId('topic-perf-blog-id').value||'').trim(), label=byId('topic-perf-status');
+      if(!blogId){ label.textContent='선택한 프로필에 블로그 ID를 입력해 주세요.'; return; }
+      label.textContent='발행 글을 연결하고 있습니다…';
+      try{ var r=await window.api.perfSync(blogId,'saju'); label.textContent=r&&r.ok?'연결된 글 '+(r.linked||0)+'개':((r&&r.error)||'연결하지 못했습니다.'); await refreshPerf(); }
+      catch(e){ label.textContent='오류: '+e.message; }
+    });
+    byId('topic-perf-check').addEventListener('click',async function(){
+      var label=byId('topic-perf-status'); label.textContent='대상 글의 통합검색 노출을 확인하고 있습니다…';
+      try{ var r=await window.api.perfCheck('saju'); label.textContent=r&&r.ok?'관찰 '+(r.checked||0)+'개'+(r.stopped==='blocked'?' · 검색 제한 감지':''):((r&&r.error)||'확인하지 못했습니다.'); await refreshPerf(); }
+      catch(e){ label.textContent='오류: '+e.message; }
+    });
+    byId('topic-serp-analyze').addEventListener('click',async function(){
+      var button=this, label=byId('topic-perf-status'); button.disabled=true; label.textContent='키워드별 통합검색을 차례로 관찰하고 있습니다…';
+      try{
+        var r=await window.api.topicSerpAnalyze('saju'); if(!r||!r.ok) throw new Error((r&&r.error)||'주제 분석을 갱신하지 못했습니다.');
+        if(r.keywordPlan&&topicConfig){topicConfig.keywordPlan=r.keywordPlan;renderKeywords();}
+        label.textContent=r.blocked?'검색 제한이 감지되어 주제 분석을 중단했습니다. 일부 결과만 저장했습니다.':'주제 키워드 분석을 갱신했습니다.';
+      }catch(e){label.textContent='주제 분석 오류: '+e.message;}finally{button.disabled=false;}
+    });
+    byId('topic-generate').addEventListener('click',async function(){
+      var button=this; var keyword=(keywordInput.value||'').trim();
+      if(!keyword){ status.textContent='키워드를 입력하거나 우선순위 목록에서 선택해 주세요.'; return; }
+      if(!profileSelect.value){ status.textContent='블로그 프로필을 선택해 주세요.'; return; }
+      if(!assets.length&&!window.confirm('사용 가능한 사진이 없습니다. 사진 없이 글을 만들까요?')) return;
+      button.disabled=true; status.className='status on'; status.textContent='원고를 만들고 있습니다…';
+      var purpose=byId('topic-purpose').value; window._genCtx=purpose==='search'?'search':'home'; window._topicTabActive=true; window._topicStatusEl=status;
+      try{
+        var request={topicId:'saju',profileKey:profileSelect.value,keyword:keyword,purpose:purpose,productKey:productSelect.value,opts:{}};
+        var result=await window.api.generateTopic(request);
+        if(result&&result.confirmRequired&&window.confirm(result.warning+' 계속 만들까요?')){ request.opts.confirmed=true; result=await window.api.generateTopic(request); }
+        if(!result||!result.ok) throw new Error((result&&result.error)||'생성에 실패했습니다.');
+        if(result.skipped||!result.post){ status.className='status on'; status.textContent=(result.holdReasons||['생성을 건너뛰었습니다.']).join(' / '); renderGenWarnings(result,status); return; }
+        var setTopicImageMode=function(mode){
+          var selector=mode==='search'?'#img-s':'#img-home'; var seg=document.querySelector(selector);
+          if(seg){ seg.querySelectorAll('.s').forEach(function(x){x.classList.remove('on');}); var mine=seg.querySelector('[data-img="mine"]'); if(mine) mine.classList.add('on'); }
+        };
+        var setTopicPhotos=function(files){ window._myPhotos=files; window._placePhotos=null; window._genType='saju'; };
+        if(result.status==='hold'){
+          status.className='status on'; status.textContent='발행 보류 — '+(result.holdReasons||[]).join(' / '); renderGenWarnings(result,status); window._genResult='hold:'+((result.holdReasons||[]).join(' / ')); return;
+        }
+        await window.topicEditorDelivery.injectTopicPost({post:result.post,assets:result.assets,purpose:purpose,keyword:keyword,setPhotos:setTopicPhotos,setImageMode:setTopicImageMode,finishGen:finishGen});
+        status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+(result.status==='review'?'검수 후 발행하세요':'원고 작성됨'); renderGenWarnings(result,status);
+        window._genResult=result.status==='review'?'ok':'ok'; await refreshPerf();
+      }catch(e){ status.className='status on'; status.textContent='오류: '+e.message; window._genResult='err:'+e.message; }
+      finally{ window._topicStatusEl=null; button.disabled=false; }
+    });
+    Promise.all([window.api.topicConfig('saju'),refreshProfiles(),refreshAssets(),refreshPerf()]).then(function(results){
+      var configResult=results[0]; if(configResult&&configResult.ok){ topicConfig=configResult.topic; renderProducts(); renderKeywords(); }
+    }).catch(function(){});
+  })();
 
   // ★잠긴 항목(data-locked="1")은 선택을 바꾸지 않고 onChange(s, true)만 부른다 —
   //   pointer-events:none 으로 막으면 클릭 자체가 안 먹어 "왜 안 되는지" 알 수가 없다(=고장으로 보임).
@@ -1744,7 +1982,7 @@
 
   // ★"나만의 썸네일 서식" — 지금 만든 썸네일 디자인(THEME)을 저장 → 다음 썸네일에 자동 적용.
   //   ★홈판/검색용 완전 분리: 저장 키를 컨텍스트별로 나눈다(savedThumbDesign_home / _search). UI·편집기는 공유해도 저장·적용은 따로.
-  function _thumbKey(){ return 'savedThumbDesign_' + (window._genCtx==='search' ? 'search' : 'home'); }
+  function _thumbKey(){ return window._topicTabActive?'savedThumbDesign_saju':'savedThumbDesign_' + (window._genCtx==='search' ? 'search' : 'home'); }
   byId('br-thumb').addEventListener('change', function(){
     if(this.checked){ try{ var d=(typeof window._readThumbDesign==='function')?window._readThumbDesign():null; if(d){ if(d.photo && /^(data:|blob:|https?:)/.test(d.photo)) d.photo='#5a6b7a,#2a3540'; /* 특정 사진은 저장 안 함(디자인·사진배경설정만) */ localStorage.setItem(_thumbKey(), JSON.stringify(d)); } }catch(e){} _brOk('br-thumb-ok', true); }
     else { localStorage.removeItem(_thumbKey()); _brOk('br-thumb-ok', false); }
@@ -2300,8 +2538,10 @@
       return Number.isNaN(date.getTime())?'-':date.toLocaleDateString();
     }
     function rankLabel(check){
-      if(!check||!check.blogTabObserved) return '-';
-      return check.blogTabRank==null?'30위 밖':String(check.blogTabRank)+'위';
+      if(!check) return '-';
+      if(check.found===undefined) return check.inIntegrated?'이전 통합검색 노출':check.blogTabObserved?'이전 확인 기록':check.measured?'이전 확인 기록':'미측정';
+      if(!check.measured) return '미측정';
+      return check.found?(String(check.blockName||'블록')+' '+String(check.positionInBlock||'?')+'위'):'글 미노출';
     }
     function summaryTable(title,groups){
       var rows=Object.keys(groups||{}).sort().map(function(key){
@@ -2310,17 +2550,19 @@
           +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.tracked||0)+'</td>'
           +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.linked||0)+'</td>'
           +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.checked||0)+'</td>'
-          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.top10||0)+'</td>'
-          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+(s.medianBestRank==null?'-':pe(s.medianBestRank))+'</td></tr>';
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.withinFirstFive||0)+'</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Math.round(Number(s.exposureRate||0)*100)+'%</td>'
+          +'<td style="text-align:center;border-top:1px solid #edf0f5">'+Number(s.siteFound||0)+'</td>'
+          +'<td style="padding:5px;border-top:1px solid #edf0f5">'+pe(Object.keys(s.blockDistribution||{}).map(function(name){return name+' '+s.blockDistribution[name];}).join(', '))+'</td></tr>';
       }).join('');
-      return '<div style="min-width:330px;flex:1"><b style="font-size:11px">'+pe(title)+'</b><table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-top:4px"><thead><tr><th style="text-align:left">구분</th><th>추적</th><th>연결</th><th>확인</th><th>10위 안</th><th>최고 순위 중앙값</th></tr></thead><tbody>'
-        +(rows||'<tr><td colspan="6" style="padding:5px;color:#8b95a5">기록 없음</td></tr>')+'</tbody></table></div>';
+      return '<div style="min-width:420px;flex:1"><b style="font-size:11px">'+pe(title)+'</b><table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-top:4px"><thead><tr><th style="text-align:left">구분</th><th>추적</th><th>연결</th><th>확인</th><th>5블록 안</th><th>노출률</th><th>사이트</th><th>블록 분포</th></tr></thead><tbody>'
+        +(rows||'<tr><td colspan="8" style="padding:5px;color:#8b95a5">기록 없음</td></tr>')+'</tbody></table></div>';
     }
     function render(data){
       latest=data||{};
       var block=latest.blockState||{};
       if(blockedBox){ blockedBox.style.display=block.blocked?'block':'none'; blockedBox.textContent=block.blocked?(block.message||'네이버 검색이 일시 제한됐어요.'):''; }
-      if(checkBtn){ checkBtn.disabled=!!block.blocked; checkBtn.textContent='순위 확인 (대상 '+Number(latest.due||0)+'개)'; checkBtn.style.opacity=block.blocked?'.55':'1'; }
+      if(checkBtn){ checkBtn.disabled=!!block.blocked; checkBtn.textContent='통합검색 확인 (대상 '+Number(latest.due||0)+'개)'; checkBtn.style.opacity=block.blocked?'.55':'1'; }
       var entries=Array.isArray(latest.entries)?latest.entries:[];
       if(entriesBox){
         entriesBox.innerHTML=entries.length?entries.map(function(entry){
@@ -2337,7 +2579,7 @@
       }
       if(summaryBox){
         var summary=latest.summary||{};
-        summaryBox.innerHTML='<div style="display:flex;gap:16px;flex-wrap:wrap">'+summaryTable('의도별',summary.byIntent||{})+summaryTable('생성 상태별',summary.byStatus||{})+'</div>';
+        summaryBox.innerHTML='<div style="display:flex;gap:16px;flex-wrap:wrap">'+summaryTable('의도별',summary.byIntent||{})+summaryTable('상품별',summary.byProduct||{})+summaryTable('블로그별',summary.byBlog||{})+summaryTable('생성 상태별',summary.byStatus||{})+'</div>';
       }
     }
     async function load(){
@@ -2369,7 +2611,7 @@
         if(before&&before.ok){ render(before); if(before.blockState&&before.blockState.blocked){ say(before.blockState.message||'네이버 검색이 일시 제한됐어요.',true); return; } }
         var result=await window.api.perfCheck();
         if(!result||!result.ok) throw new Error((result&&result.error)||'순위를 확인하지 못했습니다.');
-        say(result.stopped==='blocked'?'네이버 검색 제한으로 순위 확인을 중단했습니다.':'순위 확인 '+Number(result.checked||0)+'건을 마쳤습니다.',result.stopped==='blocked');
+        say(result.stopped==='blocked'?'네이버 검색 제한으로 통합검색 관찰을 중단했습니다.':'통합검색 관찰 '+Number(result.checked||0)+'건을 마쳤습니다.',result.stopped==='blocked');
         await load();
       }catch(error){ say(error.message,true); }finally{ if(latest&&latest.blockState&&latest.blockState.blocked) checkBtn.disabled=true; else checkBtn.disabled=false; }
     });
@@ -4510,6 +4752,11 @@
   }
   async function autoRun(kindOverride, isTest){
     var kind = kindOverride || (/[?&]kind=search/.test(location.search) ? 'search' : 'home');
+    if(byId('legacy-group')) byId('legacy-group').style.display='flex';
+    if(byId('topic-saju-pane')) byId('topic-saju-pane').style.display='none';
+    if(byId('topic-saju-tab')) byId('topic-saju-tab').classList.remove('on');
+    if(byId('topic-legacy-tab')) byId('topic-legacy-tab').classList.add('on');
+    window._topicTabActive=false;
     window._genCtx = (kind==='search'?'search':'home'); // ★진행 안내를 그 탭에 표시
     window._autoIsTest = !!isTest;
     await autoLog('=== 예약 자동 실행 시작 ('+kind+') ===');

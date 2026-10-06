@@ -206,7 +206,7 @@ function buildSearchSystemPrompt(topicKey) {
     .join('\n');
 }
 
-function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief } = {}) {
+function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext } = {}) {
   const t = getSearchTopic(topicKey);
   const evidenceSources = (Array.isArray(originalSources) ? originalSources
     : collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources })).filter((item) => {
@@ -494,6 +494,7 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     }
   }
   if (extra) lines.push(`추가 요청: ${extra}`);
+  if (topicContext && topicContext.promptBlock) lines.push(topicContext.promptBlock);
 
   if (retry) {
     lines.push('');

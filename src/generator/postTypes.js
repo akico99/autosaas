@@ -168,6 +168,20 @@ const POST_TYPES = {
     description:
       '쿠팡파트너스 고지문 맨 위 빨간 볼드 필수. 상품 링크는 사용자가 직접 제공 → 그 링크(상품 페이지·후기)를 읽고 실제 후기로 작성. 제품별 소제목 + 컬러 볼드 라벨 불릿 + 비교표 + 링크(제품마다). ★자동발행 불가(링크는 사람이 직접 선택).',
   },
+  saju: {
+    label: '사주·운세형',
+    hidden: true,
+    style: 'prose',
+    links: 'none',
+    length: { min: 1500, label: '1,800~2,500자' },
+    subhead: 'quoteLine',
+    hook: 'titleQuote',
+    quoteStyle: 'line',
+    thumbnail: 'ours',
+    bodyImage: 'myphoto',
+    advisorTopics: [],
+    description: '사주 정보는 명리학적 경향과 참고 자료로 설명한다. 공포·단정 훅, 건강·법률·투자 결정을 사주로 권하는 표현은 금지한다.',
+  },
 };
 
 // ★본문 이미지 정책 (실제 수집은 3단계 이미지소싱이 이 키를 읽어 동작)

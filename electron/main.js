@@ -44,9 +44,16 @@ const fs = require('fs');
 const M = require('../src/scrape/markup');
 // ★수집 자가진단 — "조용한 0건"(구조 변경)을 생성 결과에 실어 보낸다.
 const scrapeHealth = require('../src/scrape/health');
-const { createEntry, matchPublished, linkManually, dueChecks, findRank, addCheck, summarize } = require('../src/performance/tracker');
+const { createEntry, matchPublished, linkManually, dueChecks, addCheck, summarize } = require('../src/performance/tracker');
 const { guardedSearchFetch, runGuardedSearch, isSearchBlocked, getBlockState, NaverSearchBlockedError, setStorageDir } = require('../src/scrape/naverSearchGuard');
-const { observeSerp } = require('../src/keyword/serpObserve');
+const { collectIntegratedSerp, analyzeTopicKeywordPlan, saveTopicSerpSnapshot } = require('../src/keyword/integratedSerp');
+const { TOPICS } = require('../src/topics');
+const { buildTopicContext } = require('../src/topics/topicContext');
+const { checkTopicPost } = require('../src/topics/postCheck');
+const { readTopicProfiles, writeTopicProfiles, DEFAULT_PROFILES } = require('../src/topics/profiles');
+const { findKeywordConflict, appendKeywordLog } = require('../src/topics/keywordLog');
+const { resolveTopicImageAssets } = require('../src/topics/assets');
+const { captureTopicSite, createTopicCaptureSession: createElectronTopicCaptureSession } = require('./siteCapture');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -179,6 +186,7 @@ let keepSession = true;
 // ★엔터/스포츠 랭킹 = JS 렌더 페이지 → 숨은 창으로 렌더 후 DOM 긁기(네이버 세션 사용).
 //   페이지 하나 로드 → JS 실행 → 결과 반환 → 창 폐기.
 const scrapeRendered = createRenderedCollector({ BrowserWindow });
+let activeTopicCaptureWindows = 0;
 
 // ★★공식 사실 수집 = "네이버 AI브리핑 요약 + 정부/기관 페이지 본문"을 JS 렌더링으로 읽는다(주력 근거).
 //   블로그는 부실할 수 있어 보조로만 → 이건 공식/정확 출처. (부평구청 복지ON 같은 .go.kr 페이지 실제 내용)
@@ -1205,6 +1213,201 @@ app.whenReady().then(async () => {
     }
   });
 
+  const topicUserData = () => app.getPath('userData');
+  const topicDataRoot = (topicId) => path.join(topicUserData(), 'topic-assets', topicId);
+  function readJsonFile(file, fallback) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
+  }
+  function topicAssetList(topicId) {
+    const root = topicDataRoot(topicId);
+    let captured = [];
+    let capturedAt = null;
+    try {
+      const dirs = fs.readdirSync(root).filter((name) => /^capture-\d{8}$/.test(name)).sort().reverse();
+      if (dirs.length) {
+        const manifest = readJsonFile(path.join(root, dirs[0], 'manifest.json'), { items: [] });
+        captured = Array.isArray(manifest.items) ? manifest.items : [];
+        capturedAt = manifest.capturedAt || null;
+      }
+    } catch (_) {}
+    const customManifest = readJsonFile(path.join(root, 'custom', 'manifest-custom.json'), { items: [] });
+    const custom = Array.isArray(customManifest.items) ? customManifest.items : [];
+    return { items: [...captured, ...custom], capturedAt, captureCount: captured.length };
+  }
+  function topicWithLatestSerp(topic) {
+    try {
+      const root = topicDataRoot(topic.id);
+      const files = fs.readdirSync(root).filter((name) => /^topic-serp-\d{8}\.json$/.test(name)).sort().reverse();
+      if (!files.length) return topic;
+      const saved = readJsonFile(path.join(root, files[0]), null);
+      if (!saved || !Array.isArray(saved.keywordPlan)) return topic;
+      const byKeyword = new Map(saved.keywordPlan.map((item) => [String(item.keyword || ''), item]));
+      return { ...topic, keywordPlan: topic.keywordPlan.map((item) => ({ ...item, ...(byKeyword.get(item.keyword) || {}) })) };
+    } catch (_) { return topic; }
+  }
+  function createTopicCaptureSession(options) {
+    return createElectronTopicCaptureSession(options, {
+      BrowserWindow,
+      onCreated: () => { activeTopicCaptureWindows += 1; },
+      onClosed: () => { activeTopicCaptureWindows = Math.max(0, activeTopicCaptureWindows - 1); },
+    });
+  }
+
+  ipcMain.handle('topic:config', async (_e, topicId) => {
+    const topic = TOPICS[topicId || 'saju'];
+    return topic ? { ok: true, topic: topicWithLatestSerp(topic) } : { ok: false, error: '알 수 없는 주제입니다.' };
+  });
+  ipcMain.handle('topicProfiles:get', async (_e, topicId = 'saju') => {
+    if (!TOPICS[topicId] || !TOPICS[topicId].enabled) return { ok: false, error: '비활성 주제입니다.', profiles: [] };
+    const file = path.join(topicUserData(), 'topic-profiles.json');
+    const data = readTopicProfiles(file);
+    const profiles = data.profiles.filter((profile) => profile.topicId === topicId);
+    if (!profiles.length && topicId === 'saju') profiles.push(...DEFAULT_PROFILES.map((profile) => ({ ...profile })));
+    if (!fs.existsSync(file)) writeTopicProfiles(file, { profiles });
+    return { ok: true, profiles };
+  });
+  ipcMain.handle('topicProfiles:save', async (_e, profiles) => {
+    try {
+      if (!Array.isArray(profiles) || profiles.some((profile) => !profile || profile.topicId !== 'saju' || !/^[a-z0-9-]{2,40}$/i.test(String(profile.key || '')))) throw new Error('프로필 입력이 올바르지 않습니다.');
+      const file = path.join(topicUserData(), 'topic-profiles.json');
+      const existing = readTopicProfiles(file).profiles.filter((profile) => profile.topicId !== 'saju');
+      return { ok: true, ...writeTopicProfiles(file, { profiles: [...existing, ...profiles] }) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('topicAssets:list', async (_e, topicId = 'saju') => {
+    if (!TOPICS[topicId] || !TOPICS[topicId].enabled) return { ok: false, error: '비활성 주제입니다.', items: [] };
+    return { ok: true, ...topicAssetList(topicId) };
+  });
+  ipcMain.handle('topicAssets:capture', async (_e, topicId = 'saju') => {
+    try {
+      const topic = TOPICS[topicId];
+      if (!topic || !topic.enabled) throw new Error('비활성 주제입니다.');
+      const dateKey = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }).replace(/-/g, '');
+      const outDir = path.join(topicDataRoot(topicId), `capture-${dateKey}`);
+      const result = await captureTopicSite(topic, { outDir, createSession: createTopicCaptureSession });
+      return { ok: true, ...result };
+    } catch (error) { return { ok: false, error: error.message, items: [] }; }
+  });
+  ipcMain.handle('topicAssets:addCustom', async (_e, { topicId = 'saju', caption = '', tags = [] } = {}) => {
+    try {
+      if (!TOPICS[topicId] || !TOPICS[topicId].enabled) throw new Error('비활성 주제입니다.');
+      const selected = await dialog.showOpenDialog(mainWindow, { title: '주제 사진 선택', properties: ['openFile', 'multiSelections'], filters: [{ name: '이미지', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }] });
+      if (selected.canceled || !selected.filePaths.length) return { ok: true, cancelled: true, items: [] };
+      const dir = path.join(topicDataRoot(topicId), 'custom');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'manifest-custom.json');
+      const manifest = readJsonFile(file, { items: [] });
+      const items = Array.isArray(manifest.items) ? manifest.items : [];
+      for (const source of selected.filePaths) {
+        const ext = path.extname(source).toLowerCase();
+        if (!['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext)) continue;
+        const id = `custom-${require('crypto').createHash('sha1').update(source + Date.now() + Math.random()).digest('hex').slice(0, 12)}`;
+        const target = path.join(dir, `${id}${ext}`);
+        fs.copyFileSync(source, target);
+        items.push({ id, path: target, caption: String(caption).slice(0, 120), tags: Array.isArray(tags) ? tags.map((tag) => String(tag).slice(0, 40)).slice(0, 12) : [], source: 'custom' });
+      }
+      fs.writeFileSync(file + '.tmp', JSON.stringify({ items }, null, 2), 'utf8');
+      fs.renameSync(file + '.tmp', file);
+      return { ok: true, items: topicAssetList(topicId).items };
+    } catch (error) { return { ok: false, error: error.message, items: [] }; }
+  });
+  ipcMain.handle('topic:performance', async (_e, topicId = 'saju') => {
+    const data = readSearchPerformance();
+    const entries = data.entries.filter((entry) => entry.topic === topicId).slice(-100).reverse();
+    return { ok: true, entries, summary: summarize(entries) };
+  });
+
+  ipcMain.handle('topic:serpAnalyze', async (_e, topicId = 'saju') => {
+    try {
+      const topic = TOPICS[topicId];
+      if (!topic || !topic.enabled) throw new Error('비활성 주제입니다.');
+      const result = await analyzeTopicKeywordPlan(topic, {
+        collect: (keyword) => collectIntegratedSerp(keyword, {
+          runGuardedSearch,
+          scrapeRendered,
+          searchUrl: M.searchUrl.integrated,
+          userAgent: _DESKTOP_UA_OF,
+          domains: topic.domains || [],
+        }),
+      });
+      const dateKey = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }).replace(/-/g, '');
+      const snapshot = { ...result, dateKey };
+      saveTopicSerpSnapshot(topicDataRoot(topicId), snapshot);
+      return { ok: true, blocked: result.blocked, keywordPlan: result.keywordPlan, observations: result.observations };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
+  ipcMain.handle('generate:topic', async (_e, request = {}) => {
+    try {
+      const { topicId = 'saju', profileKey, keyword: rawKeyword, purpose = 'search', productKey, opts = {} } = request;
+      const topic = TOPICS[topicId];
+      if (!topic || !topic.enabled) throw new Error('현재 사용할 수 없는 주제입니다.');
+      if (!['search', 'home'].includes(purpose)) throw new Error('용도는 검색용 또는 홈판용이어야 합니다.');
+      const keyword = String(rawKeyword || '').trim();
+      if (!keyword) throw new Error('키워드를 입력해 주세요.');
+      const profileData = readTopicProfiles(path.join(topicUserData(), 'topic-profiles.json'));
+      const profile = profileData.profiles.find((item) => item.key === profileKey && item.topicId === topicId);
+      if (!profile) throw new Error('블로그 프로필을 선택해 주세요.');
+      if (!/^[a-z0-9-]{2,40}$/i.test(String(profile.key || ''))) throw new Error('프로필 키가 올바르지 않습니다.');
+      const chosenPlan = topic.keywordPlan.find((item) => item.keyword === keyword);
+      const chosenProductKey = productKey || (chosenPlan && chosenPlan.product) || 'intro';
+      const logFile = path.join(topicUserData(), 'topic-keyword-log.json');
+      const records = readJsonFile(logFile, []);
+      const conflict = findKeywordConflict(records, { topicId, blogKey: profile.key, keyword });
+      if (conflict && conflict.kind === 'different-blog') {
+        if (opts.auto) return { ok: true, status: 'hold', skipped: true, holdReasons: ['다른 블로그에서 최근 사용한 키워드라 자동 생성을 건너뛰었습니다.'], conflict };
+        if (!opts.confirmed) return { ok: true, confirmRequired: true, conflict, warning: '최근 30일 안에 다른 블로그에서 사용한 키워드입니다.' };
+      }
+      const assetsData = topicAssetList(topicId);
+      const context = buildTopicContext({ topic, profile, keyword, productKey: chosenProductKey, purpose, assets: assetsData.items, blogKey: profile.key });
+      const generated = purpose === 'search'
+        ? await generateSearchPost({ topic: 'daily', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, strictEvidence: !!opts.auto, maxAttempts: 2 })
+        : await generatePost({ type: 'saju', keyword, persona: profile.persona, style: profile.toneHint, topicContext: context, maxAttempts: 2 });
+      const post = generated && generated.post;
+      if (!post) return { ok: true, status: generated.status || 'hold', holdReasons: generated.holdReasons || ['원고를 만들지 못했습니다.'], post: null, brief: generated.brief || null };
+      post.blocks = Array.isArray(post.blocks) ? post.blocks : [];
+      post.blocks = post.blocks.filter((block) => !(block && block.kind === 'link' && block.href === context.ctaUrl));
+      post.blocks.push({ kind: 'link', text: `${context.product.label} 더 자세히 보기`, href: context.ctaUrl });
+      const checked = checkTopicPost(post, { topic, product: context.product, disclosureLine: context.disclosureLine });
+      const status = generated.status === 'hold' || checked.status === 'hold' ? 'hold'
+        : generated.status === 'review' || checked.status === 'review' ? 'review' : 'ready';
+      const reviewReasons = [...(generated.reviewReasons || []), ...checked.reviewReasons];
+      const holdReasons = [...(generated.holdReasons || []), ...checked.holdReasons];
+      const usageFile = path.join(topicUserData(), 'topic-asset-usage.json');
+      const usage = readJsonFile(usageFile, []);
+      const mapped = resolveTopicImageAssets(post, assetsData.items, { productKey: chosenProductKey, keyword, blogKey: profile.key, usage, maxImages: purpose === 'search' ? 6 : 5 });
+      const framedDir = path.join(topicDataRoot(topicId), 'framed', profile.key);
+      fs.mkdirSync(framedDir, { recursive: true });
+      const frameColor = /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(String(profile.frameColor || '')) ? profile.frameColor : '#eeeeee';
+      const framedPaths = [];
+      for (const asset of mapped.assets) {
+        const bytes = fs.readFileSync(asset.path);
+        const digest = require('crypto').createHash('sha1').update(bytes).digest('hex');
+        const framed = path.join(framedDir, `${digest}-${frameColor.slice(1)}.png`);
+        if (!fs.existsSync(framed)) {
+          const ext = path.extname(asset.path).toLowerCase();
+          const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+          const html = `<!doctype html><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;width:1080px;height:1080px;background:${frameColor};overflow:hidden}body{padding:24px}img{width:100%;height:100%;object-fit:contain;border-radius:24px;background:#fff}</style><img src="data:${mime};base64,${bytes.toString('base64')}">`;
+          await renderHtmlToPngWin(html, framed, 1080, []);
+        }
+        framedPaths.push(framed);
+        usage.push({ assetId: asset.id, blogKey: profile.key, at: new Date().toISOString() });
+      }
+      mapped.assetPaths = framedPaths;
+      fs.writeFileSync(usageFile + '.tmp', JSON.stringify(usage, null, 2), 'utf8');
+      fs.renameSync(usageFile + '.tmp', usageFile);
+      if (conflict && conflict.kind === 'same-blog') reviewReasons.push('같은 블로그에서 14일 이내 사용한 키워드입니다.');
+      appendKeywordLog(logFile, { topicId, blogKey: profile.key, keyword, at: new Date().toISOString() });
+      try {
+        const store = readSearchPerformance();
+        store.entries.push(createEntry({ keyword, topic: topicId, intent: generated.brief && generated.brief.intent || 'general', status, title: post.title || '', generatedAt: new Date().toISOString(), blogKey: profile.key, productKey: chosenProductKey }));
+        store.entries = store.entries.slice(-500);
+        writeSearchPerformance(store);
+      } catch (error) { console.warn('[perf] 주제 성과 항목 저장 실패:', error.message); }
+      return { ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })), status, holdReasons, reviewReasons, brief: generated.brief || { intentLabel: purpose === 'home' ? '홈판용' : '검색 의도 미분류' }, contentCheck: generated.contentCheck || null, validation: generated.validation || null, factCheck: generated.factCheck || null, scrapeHealth: generated.scrapeHealth || null, meta: generated.meta || null, topic: { profileKey: profile.key, productKey: chosenProductKey, ctaUrl: context.ctaUrl, conflict: conflict || null } };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
   // 자동 로그인 유지 여부 저장 (렌더러 로그인 화면에서 설정)
   ipcMain.handle('session:autologin', async (_e, keep) => { keepSession = !!keep; return { ok: true }; });
 
@@ -1927,13 +2130,19 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('perf:sync', async (_e, { blogId } = {}) => {
+  ipcMain.handle('perf:sync', async (_e, { blogId, topicId } = {}) => {
     const fetched = await fetchMyBlogPosts(blogId);
     if (!fetched.ok) return { ok: false, linked: 0, error: fetched.error || '블로그 글 목록을 가져오지 못했습니다.' };
     const store = readSearchPerformance();
-    const before = store.entries.filter((entry) => !entry.url).length;
-    store.entries = matchPublished(store.entries, fetched.posts);
-    const after = store.entries.filter((entry) => !entry.url).length;
+    const targets = topicId ? store.entries.filter((entry) => entry.topic === topicId) : store.entries;
+    const before = targets.filter((entry) => !entry.url).length;
+    const matched = matchPublished(targets, fetched.posts);
+    if (topicId) {
+      const byId = new Map(matched.map((entry) => [entry.id, entry]));
+      store.entries = store.entries.map((entry) => byId.get(entry.id) || entry);
+    } else store.entries = matched;
+    const afterTargets = topicId ? store.entries.filter((entry) => entry.topic === topicId) : store.entries;
+    const after = afterTargets.filter((entry) => !entry.url).length;
     writeSearchPerformance(store);
     return { ok: true, linked: Math.max(0, before - after) };
   });
@@ -1949,23 +2158,27 @@ app.whenReady().then(async () => {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
-  ipcMain.handle('perf:check', async () => {
+  ipcMain.handle('perf:check', async (_e, { topicId } = {}) => {
     const store = readSearchPerformance();
-    const due = dueChecks(store.entries).slice(0, 6);
+    const candidates = topicId ? store.entries.filter((entry) => entry.topic === topicId) : store.entries;
+    const due = dueChecks(candidates).slice(0, 6);
     let checked = 0;
     let stopped = null;
     for (const item of due) {
       const index = store.entries.findIndex((entry) => entry.id === item.id);
       if (index < 0) continue;
       const entry = store.entries[index];
-      let blogRefs = [];
-      let blogTabObserved = false;
+      let integrated = null;
       let failureReason = '';
       try {
-        const response = await guardedSearchFetch(M.searchUrl.blog(entry.keyword));
-        if (response.status !== 200) throw new Error('블로그 검색 응답 오류: HTTP ' + response.status);
-        blogTabObserved = true;
-        blogRefs = M.parseSerpSections(response.body.toString('utf8')).blogRefs;
+        integrated = await collectIntegratedSerp(entry.keyword, {
+          runGuardedSearch,
+          scrapeRendered,
+          searchUrl: M.searchUrl.integrated,
+          userAgent: _DESKTOP_UA_OF,
+          domains: TOPICS[entry.topic] && TOPICS[entry.topic].domains || [],
+          trackedPost: { blogId: entry.blogId, logNo: entry.logNo },
+        });
       } catch (error) {
         if (error instanceof NaverSearchBlockedError || error && error.code === 'NAVER_SEARCH_BLOCKED') {
           stopped = 'blocked';
@@ -1973,17 +2186,22 @@ app.whenReady().then(async () => {
         }
         failureReason = String(error && error.message || error);
       }
-      const integrated = await observeSerp(entry.keyword);
-      if (integrated.blocked) {
+      if (integrated && integrated.blocked) {
         stopped = 'blocked';
         break;
       }
-      const blogTabRank = findRank(blogRefs, entry.blogId, entry.logNo);
-      const inIntegrated = findRank(integrated.blogRefs, entry.blogId, entry.logNo) != null;
-      const reason = failureReason || (!integrated.measured ? integrated.reason || '통합검색 관찰 실패' : '');
+      const reason = failureReason || (integrated && !integrated.measured
+        ? integrated.reason || (integrated.warnings || []).join(' / ') || '통합검색 관찰 실패' : '');
+      const hit = integrated && integrated.postFound || null;
       store.entries[index] = addCheck(entry, {
-        at: new Date().toISOString(), dueDay: item.dueDay, blogTabRank,
-        blogTabObserved, inIntegrated, measured: blogTabObserved && integrated.measured,
+        at: new Date().toISOString(), dueDay: item.dueDay,
+        found: !!hit,
+        blockName: hit && hit.blockName || '',
+        blockOrder: hit && hit.blockOrder,
+        positionInBlock: hit && hit.positionInBlock,
+        overallDocPosition: hit && hit.overallDocPosition,
+        siteFound: integrated && integrated.siteFound || null,
+        measured: !!(integrated && integrated.measured),
         reason,
       });
       checked++;
@@ -2451,5 +2669,5 @@ app.on('before-quit', async (e) => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin' && activeTopicCaptureWindows === 0) app.quit();
 });

@@ -47,12 +47,14 @@ npm run check
 ```
 electron/main.js      메인 프로세스 — IPC 핸들러(키워드·생성·이미지·에디터 주입·예약·세션)
 electron/preload.js   렌더러 브릿지 (window.api.*)
+electron/siteCapture.js 주제별 사이트 화면 캡처 (세션·대기·저장 경로 주입 가능)
 app/login.html        클로드(OAuth 코드) · 네이버(웹뷰) 로그인
 app/app.html          메인 UI — 홈판용 / 검색용 탭 · 예약 패널 · 에디터 웹뷰
 src/generator/        글 생성 (runClaude · buildPrompt · generatePost · generateSearchPost · searchBrief · searchContentCheck)
 src/keyword/          키워드·근거 수집 (trends · advisor · expand · niche · background · radar · report · serpObserve …)
 src/performance/      검색용 원고 발행·순위 성과 추적
 src/scrape/naverSearchGuard.js 네이버 검색 요청 직렬화·차단 보호
+src/topics/           주제 설정·프로필·검색 키워드·원고 맥락·사진 자산
 src/image/            뉴스 사진 수집(newsImages) · Claude 비전 필터(visionFilter)
 src/thumbnail/        텍스트 카드 썸네일 SVG → PNG
 src/place/            네이버 플레이스 장소 조회

@@ -58,7 +58,7 @@ function newsQueryVariants(keyword) {
  * @param {number} [opts.maxAttempts] - 규칙 위반 시 자동 재생성 최대 횟수(기본 3).
  * @returns {Promise<{ post, validation, meta, attempts }>}
  */
-async function generatePost({ type, keyword, extra, tone, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, trends, extraTrends, avoidKeywords, headingTarget, cardMode, contentForm, model, maxAttempts = 3 } = {}) {
+async function generatePost({ type, keyword, extra, tone, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, trends, extraTrends, avoidKeywords, headingTarget, cardMode, contentForm, model, maxAttempts = 3, topicContext } = {}) {
   const postType = getPostType(type); // 잘못된 유형이면 여기서 예외
   scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   const system = buildSystemPrompt(type, { tone });
@@ -266,7 +266,9 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
     if (out) {
       try {
         out.factCheck = await factCheckPost({
-          post: out.post, facts: keywordFacts, articles: keywordArticles,
+          post: out.post, facts: topicContext && topicContext.evidenceSource
+            ? [...(keywordFacts || []), topicContext.evidenceSource.text]
+            : keywordFacts, articles: keywordArticles,
           background: keywordBackground, placeReviews,
         });
         _tlog('★팩트 대조: ' + (out.factCheck.ran
@@ -293,7 +295,7 @@ async function generatePost({ type, keyword, extra, tone, style, persona, fan, p
           }
         : null;
 
-    const user = buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews: reviewList, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends: trendList, typeLabel: postType.label, avoidKeywords, headingTarget, cardMode, contentForm });
+    const user = buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews: reviewList, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends: trendList, typeLabel: postType.label, avoidKeywords, headingTarget, cardMode, contentForm, topicContext });
     const _tq = Date.now();
     const { text, meta } = await runClaude({ system, user, model });
     _tlog('★runClaude 생성 attempt' + attempt + ' = ' + Math.round((Date.now() - _tq) / 1000) + 's');

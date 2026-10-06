@@ -25,6 +25,7 @@ const { isSearchBlocked, getBlockState } = require('../scrape/naverSearchGuard')
 const { factCheckPost } = require('./factCheck');
 const { buildSearchBrief, collectOriginalSources, collectSourceMetadata } = require('./searchBrief');
 const { checkRequiredAnswers, detectExperienceClaims } = require('./searchContentCheck');
+const { topicEvidenceForIntent } = require('../topics/topicContext');
 
 // ★네이버 지도 검색어 = "지역 상호명"으로만(사용자 확정 2026-08-26). 프랜차이즈 지점 구분은 사용자가 가게 이름에 지점까지 적어줌(UI 안내).
 //   플레이스 조회로 얻은 공식 이름(지점명 포함) 앞에 지역(시/군)만 붙인다. 지역 못 뽑으면 상호명만.
@@ -59,7 +60,7 @@ async function extractMainKeyword(title, text, model, run = runClaude) {
   return String(out || '').trim().split('\n')[0].replace(/^["'\s]+|["'\s]+$/g, '').slice(0, 30);
 }
 
-async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false, keywordSources, run, factCheckRun, contentCheckRun } = {}) {
+async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false, keywordSources, run, factCheckRun, contentCheckRun, topicContext } = {}) {
   const searchTopic = getSearchTopic(topic); // 잘못된 주제면 여기서 예외
   scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   if (officialFacts && officialFacts.error) {
@@ -179,13 +180,23 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       errorCode: blockState.code,
     });
   }
-  const originalSources = collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources });
-  const sourceMetadata = collectSourceMetadata({ source, officialFacts, newsArticles, keywordFacts, keywordSources });
-  const brief = buildSearchBrief({
+  const baseBrief = buildSearchBrief({
     keyword: kw, topic, review, source, memo, paid, style, autocomplete,
     newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews,
     searchBlocked, serp,
   });
+  // 서비스 사실은 서비스 안내에 한해 원문 근거로 인정한다. 최신 이슈로 분류된 원고에는 넣지 않는다.
+  const topicEvidence = topicEvidenceForIntent(topicContext && topicContext.evidenceSource, baseBrief.intent);
+  const generationKeywordSources = topicEvidence.length
+    ? [...(Array.isArray(keywordSources) ? keywordSources : []), ...topicEvidence]
+    : keywordSources;
+  const originalSources = collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources: generationKeywordSources });
+  const sourceMetadata = collectSourceMetadata({ source, officialFacts, newsArticles, keywordFacts, keywordSources: generationKeywordSources });
+  const brief = topicEvidence.length ? buildSearchBrief({
+    keyword: kw, topic, review, source, memo, paid, style, autocomplete,
+    newsArticles, keywordFacts, keywordSources: generationKeywordSources, officialFacts, placeReviews,
+    searchBlocked, serp,
+  }) : baseBrief;
   if (strictEvidence && brief.preHoldReasons.length) {
     return {
       post: null,
@@ -239,7 +250,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
           }
         : null;
 
-    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief });
+    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources: generationKeywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext });
     const { text, meta: generatedMeta } = await modelRunner({ system, user, model });
     const meta = { ...(generatedMeta || {}), sources: sourceMetadata };
     // ★JSON 파싱 실패도 재시도 대상 — 마지막 시도가 아니면 다시 생성.

@@ -541,7 +541,7 @@ const VOICE_STYLES = [
   '팩트를 딱딱 정리해주는 똑부러진 정보 전달체로',
 ];
 
-function buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends, typeLabel, avoidKeywords, headingTarget, cardMode, contentForm } = {}) {
+function buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackground, keywordAngles, nicheAngles, extra, style, persona, fan, places, reviews, coupangLinks, reviewInfo, reviewOpts, placeReviews, refTitles, retry, trends, typeLabel, avoidKeywords, headingTarget, cardMode, contentForm, topicContext } = {}) {
   const lines = [];
   let hasFacts = false;
   const _now = new Date();
@@ -840,6 +840,7 @@ function buildUserPrompt({ keyword, keywordFacts, keywordArticles, keywordBackgr
   lines.push('- ★인물 글이면 훅에서 이름을 잠깐 감췄더라도, 본문에선 반드시 그 인물이 누구인지(대표작·별명·왜 유명한지)를 풀어 밝힌다. 끝까지 정체를 숨긴 채 궁금증만 던지고 끝내지 마라(독자가 허탕치면 저품질).');
   lines.push('- ★면책·출처 고지 문장 금지: "이 글은 …공개·보도된 사실을 바탕으로 정리했다", "확인되지 않은 사생활은 담지 않았다" 같은 자기고지·디스클레이머를 본문에 넣지 마라(몰입·가독성 해침).');
   if (extra) lines.push(`추가 요청: ${extra}`);
+  if (topicContext && topicContext.promptBlock) lines.push(topicContext.promptBlock);
 
   // 자동 재생성 시: 직전 실패 이유를 붙여 반드시 고치게 한다.
   if (retry) {
