@@ -987,10 +987,20 @@
           var value=esc(item.url||'').replace(/"/g,'&quot;');
           var checks=Array.isArray(item.checks)?item.checks.slice().sort(function(a,b){return (Date.parse(b.at)||0)-(Date.parse(a.at)||0);}):[];
           var latest=checks[0], observed=latest?(latest.found===undefined?(latest.inIntegrated?'이전 통합검색에서 노출됨':latest.blogTabObserved?'이전 확인 기록':'통합검색 미측정'):(latest.measured?(latest.found?'통합검색 '+esc(latest.blockName||'')+' '+Number(latest.positionInBlock||0)+'위':'통합검색 결과에서 글 미노출'):'통합검색 미측정')):'';
-          return '<div style="padding:6px 0;border-top:1px solid #edf0f5"><b>'+esc(item.keyword||'')+'</b> · '+esc(item.productKey||'')+' · '+esc(item.statusAtGen||'')+'<br><span>'+esc(item.titleAtGen||'')+'</span>'
+          var stats=Array.isArray(item.manualStats)?item.manualStats:[]; var lastStat=stats[stats.length-1];
+          var baseAt=Date.parse(item.publishedAt||item.generatedAt||'')||0;
+          var statText=lastStat?('조회수 '+Number(lastStat.views)+(baseAt?' ('+Math.max(0,Math.floor(((Date.parse(lastStat.at)||Date.now())-baseAt)/86400000))+'일째)':'')):'';
+          var homeBox=item.purpose==='home'?('<div style="display:flex;gap:5px;margin-top:4px"><input data-topic-views="'+esc(item.id)+'" type="number" min="0" placeholder="블로그 통계 조회수" style="flex:1;min-width:0"><button type="button" data-topic-views-save="'+esc(item.id)+'" class="rfixbtn">조회수 기록</button></div>'):'';
+          return '<div style="padding:6px 0;border-top:1px solid #edf0f5"><b>'+esc(item.keyword||'')+'</b> · '+(item.purpose==='home'?'홈판용':'검색용')+' · '+esc(item.productKey||'')+' · '+esc(item.statusAtGen||'')+'<br><span>'+esc(item.titleAtGen||'')+'</span>'
             +(observed?'<br><span>'+observed+'</span>':'')
+            +(statText?'<br><span>'+esc(statText)+'</span>':'')+homeBox
             +(item.url?'<br><a href="'+value+'" target="_blank" rel="noreferrer">발행 글 보기</a>':'<div style="display:flex;gap:5px;margin-top:4px"><input data-topic-url="'+esc(item.id)+'" type="url" placeholder="발행 글 주소" style="flex:1;min-width:0"><button type="button" data-topic-link="'+esc(item.id)+'" class="rfixbtn">주소 연결</button></div>')+'</div>';
         }).join(''):'아직 생성 기록이 없습니다.';
+        box.querySelectorAll('[data-topic-views-save]').forEach(function(button){ button.addEventListener('click',async function(){
+          var id=button.getAttribute('data-topic-views-save'), input=box.querySelector('[data-topic-views="'+id+'"]');
+          try{ var saved=await window.api.perfRecordViews(id,input&&input.value||''); if(!saved||!saved.ok) throw new Error((saved&&saved.error)||'조회수를 기록하지 못했습니다.'); await refreshPerf(); }
+          catch(e){ var label=byId('topic-perf-status'); if(label) label.textContent='조회수 기록 오류: '+e.message; }
+        }); });
         box.querySelectorAll('[data-topic-link]').forEach(function(button){ button.addEventListener('click',async function(){
           var id=button.getAttribute('data-topic-link'), input=box.querySelector('[data-topic-url="'+id+'"]');
           try{ var linked=await window.api.perfLink(id,input&&input.value||''); if(!linked||!linked.ok) throw new Error((linked&&linked.error)||'주소를 연결하지 못했습니다.'); await refreshPerf(); }
@@ -1079,11 +1089,23 @@
           status.className='status on'; status.textContent='발행 보류 — '+(result.holdReasons||[]).join(' / '); renderGenWarnings(result,status); window._genResult='hold:'+((result.holdReasons||[]).join(' / ')); return;
         }
         await injectTopicResult(result,purpose,keyword);
-        status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+(result.status==='review'?'검수 후 발행하세요':'원고 작성됨'); renderGenWarnings(result,status);
+        status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+(result.status==='review'?'검수 후 발행하세요':'원고 작성됨')+strategyLine(result); renderGenWarnings(result,status);
         window._genResult=result.status==='review'?'ok':'ok'; await refreshPerf();
       }catch(e){ status.className='status on'; status.textContent='오류: '+e.message; window._genResult='err:'+e.message; }
       finally{ window._topicStatusEl=null; button.disabled=false; }
     });
+    // ★원고 전략 한 줄 — 어떤 기준으로 썼는지(오늘 검색 화면/저장된 분석/홈판 기준)와 주의점.
+    var FORMAT_NAME={review:'이용 후기형',recommend:'추천·모음형',howto:'방법·안내형',definition:'뜻·개념형',compare:'비교형',mixed:'혼합'};
+    var SLOT_NAME={high:'높음',mid:'보통',low:'낮음'};
+    function strategyLine(result){
+      var st=result&&result.topic&&result.topic.strategy;
+      if(!st) return (result&&result.post&&byId('topic-purpose').value==='home')?'<br><span style="color:#5a6577">원고 기준: 사주 홈판 기준(앱 기본값)</span>':'';
+      var parts=[st.source==='live'?'오늘 통합검색 화면 기준':st.source==='saved'?'저장된 주제 분석 기준':'검색 화면 미확인'];
+      if(st.blogSlot) parts.push('블로그 진입 '+(SLOT_NAME[st.blogSlot]||st.blogSlot));
+      if(st.dominantFormat) parts.push('상위 글 '+(FORMAT_NAME[st.dominantFormat]||st.dominantFormat));
+      var warn=(st.warnings||[]).length?'<br><span style="color:#c0392b">⚠ '+(st.warnings||[]).map(esc).join(' / ')+'</span>':'';
+      return '<br><span style="color:#5a6577">원고 기준: '+parts.map(esc).join(' · ')+'</span>'+warn;
+    }
     // ★생성 결과(또는 보관함 원고)를 에디터에 넣는다 — 캡처 사진을 "내 사진" 경로로 배치.
     async function injectTopicResult(result,purpose,keyword){
       var setTopicImageMode=function(mode){
@@ -1103,7 +1125,8 @@
       if(!drafts.length){ box.textContent='보관된 원고가 없습니다.'; return; }
       box.innerHTML=drafts.map(function(d){
         var title=(d.result&&d.result.post&&d.result.post.title)||'(원고 없음)';
-        var reasons=(d.holdReasons||[]).concat(d.reviewReasons||[]).slice(0,3);
+        var stw=(d.result&&d.result.topic&&d.result.topic.strategy&&d.result.topic.strategy.warnings)||[];
+        var reasons=(d.holdReasons||[]).concat(d.reviewReasons||[]).concat(stw).slice(0,4);
         var when=String(d.updatedAt||d.createdAt||'').replace('T',' ').slice(0,16);
         return '<div class="draft-row" data-id="'+esc(d.id)+'" style="border-top:1px solid #eef1f5;padding:8px 0">'
           +'<div><b>'+esc(STATUS_LABEL[d.status]||d.status)+'</b> · '+esc(d.keyword)+' · '+(d.purpose==='home'?'홈판용':'검색용')+' · '+(d.source==='import'?'직접 작성':'미리 생성')+(d.injectedAt?' · 에디터에 넣음':'')+' · '+esc(when)+'</div>'
@@ -1176,7 +1199,7 @@
           status.className='status on'; status.textContent='보관함 원고를 에디터에 넣는 중… ("'+d.keyword+'")'; window._topicStatusEl=status;
           await injectTopicResult(d.result,d.purpose,d.keyword);
           await window.api.topicDraftsMarkInjected(id);
-          status.innerHTML='완료! <b>'+esc(d.result.post.title||'')+'</b> — 보관함 원고를 넣었습니다. 검수 후 발행하세요.'; renderGenWarnings(d.result,status);
+          status.innerHTML='완료! <b>'+esc(d.result.post.title||'')+'</b> — 보관함 원고를 넣었습니다. 검수 후 발행하세요.'+strategyLine(d.result); renderGenWarnings(d.result,status);
           await refreshDrafts();
         }
       }catch(e){ window.alert('오류: '+e.message); }

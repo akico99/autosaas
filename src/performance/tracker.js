@@ -24,7 +24,7 @@ function normalizeTitle(title) {
     .replace(/[\s\p{P}\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D]/gu, '');
 }
 
-function createEntry({ keyword, topic, intent, status, title, generatedAt, version, blogKey, productKey } = {}) {
+function createEntry({ keyword, topic, intent, status, title, generatedAt, version, blogKey, productKey, purpose } = {}) {
   const at = generatedAt || new Date().toISOString();
   const timestamp = toTime(at);
   const ms = Number.isFinite(timestamp) ? timestamp : Date.now();
@@ -46,6 +46,7 @@ function createEntry({ keyword, topic, intent, status, title, generatedAt, versi
     checks: [],
     ...(blogKey ? { blogKey: String(blogKey) } : {}),
     ...(productKey ? { productKey: String(productKey) } : {}),
+    ...(purpose ? { purpose: String(purpose) } : {}),
   };
 }
 
@@ -215,4 +216,13 @@ function summarize(entries) {
   };
 }
 
-module.exports = { DUE_DAYS, createEntry, normalizeTitle, matchPublished, linkManually, dueChecks, findRank, addCheck, summarize };
+// 홈판 글은 검색 순위로 성과를 볼 수 없어 블로그 통계의 조회수를 직접 적는다(최근 30개 보관).
+function addManualStat(entry, { views, at } = {}) {
+  const count = Number(String(views == null ? '' : views).replace(/,/g, '').trim());
+  if (!Number.isInteger(count) || count < 0) throw new Error('조회수는 0 이상의 정수로 입력해 주세요.');
+  const stamp = at || new Date().toISOString();
+  const manualStats = (Array.isArray(entry.manualStats) ? entry.manualStats : []).concat({ at: stamp, views: count }).slice(-30);
+  return { ...entry, manualStats };
+}
+
+module.exports = { DUE_DAYS, createEntry, normalizeTitle, matchPublished, linkManually, dueChecks, findRank, addCheck, summarize, addManualStat };

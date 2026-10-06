@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('api', {
   perfList: () => ipcRenderer.invoke('perf:list'),
   perfSync: (blogId, topicId) => ipcRenderer.invoke('perf:sync', { blogId, topicId }),
   perfLink: (id, url) => ipcRenderer.invoke('perf:link', { id, url }),
+  perfRecordViews: (id, views) => ipcRenderer.invoke('perf:recordViews', { id, views }),
   perfCheck: (topicId) => ipcRenderer.invoke('perf:check', { topicId }),
   getSearchRecent: () => ipcRenderer.invoke('searchRecent:get'),
   addSearchRecent: (keyword) => ipcRenderer.invoke('searchRecent:add', { keyword }),

@@ -245,7 +245,7 @@ async function collectIntegratedSerp(keyword, {
 
 function slotForObservation(result, priorSlot) {
   if (!result || !result.measured) return priorSlot;
-  const blogBlock = (result.blocks || []).find((block) => (block.items || []).some((item) => item.sourceType === '블로그'));
+  const blogBlock = (result.blocks || []).find((block) => block.blockKind !== 'ad' && block.blockKind !== 'brand-content' && (block.items || []).some((item) => item.sourceType === '블로그'));
   if (!blogBlock) return 'low';
   if (Number(blogBlock.blockOrder) <= 2) return 'high';
   if (Number(blogBlock.blockOrder) <= 5) return 'mid';

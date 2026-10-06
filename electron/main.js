@@ -44,7 +44,7 @@ const fs = require('fs');
 const M = require('../src/scrape/markup');
 // ★수집 자가진단 — "조용한 0건"(구조 변경)을 생성 결과에 실어 보낸다.
 const scrapeHealth = require('../src/scrape/health');
-const { createEntry, matchPublished, linkManually, dueChecks, addCheck, summarize } = require('../src/performance/tracker');
+const { createEntry, matchPublished, linkManually, dueChecks, addCheck, summarize, addManualStat } = require('../src/performance/tracker');
 const { guardedSearchFetch, runGuardedSearch, isSearchBlocked, getBlockState, NaverSearchBlockedError, setStorageDir } = require('../src/scrape/naverSearchGuard');
 const { collectIntegratedSerp, analyzeTopicKeywordPlan, saveTopicSerpSnapshot } = require('../src/keyword/integratedSerp');
 const { TOPICS } = require('../src/topics');
@@ -56,6 +56,7 @@ const { resolveTopicImageAssets } = require('../src/topics/assets');
 const { captureTopicSite, createTopicCaptureSession: createElectronTopicCaptureSession } = require('./siteCapture');
 const topicDrafts = require('../src/topics/drafts');
 const { parseDraftText, postToDraftText, ensureImageSlots } = require('../src/topics/draftText');
+const { buildKeywordStrategy, homefeedGuidance } = require('../src/topics/keywordStrategy');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -1365,6 +1366,22 @@ app.whenReady().then(async () => {
       }
       const assetsData = topicAssetList(topicId);
       const context = buildTopicContext({ topic, profile, keyword, productKey: chosenProductKey, purpose, assets: assetsData.items, blogKey: profile.key });
+      // ★키워드 원고 전략 — 검색용은 지금 그 키워드의 통합검색 화면을 정밀 분석기로 읽어 형식·제목·주의점을 지시한다.
+      //   (같은 키워드는 검색 보호 장치 캐시를 재사용 / 못 읽으면 저장된 주제 분석으로 대체). 홈판용은 사주 홈판 기준을 쓴다.
+      let strategy = null;
+      if (!importedPost) {
+        if (purpose === 'search') {
+          let observation = null;
+          try {
+            observation = await collectIntegratedSerp(keyword, { runGuardedSearch, scrapeRendered, searchUrl: M.searchUrl.integrated, userAgent: _DESKTOP_UA_OF, domains: topic.domains || [] });
+          } catch (error) { observation = { measured: false, reason: error.message }; }
+          const savedPlan = topicWithLatestSerp(topic).keywordPlan.find((item) => item.keyword === keyword) || null;
+          strategy = buildKeywordStrategy({ keyword, observation, plan: savedPlan });
+          if (strategy.promptBlock) context.promptBlock += '\n' + strategy.promptBlock;
+        } else {
+          context.promptBlock += '\n' + homefeedGuidance(keyword);
+        }
+      }
       const generated = importedPost
         ? { post: importedPost, status: 'review', reviewReasons: ['직접 작성한 원고라 근거 대조를 하지 않았습니다.'], holdReasons: [], brief: { intentLabel: '직접 작성 원고' } }
         : purpose === 'search'
@@ -1408,11 +1425,11 @@ app.whenReady().then(async () => {
       if (!skipLogs) appendKeywordLog(logFile, { topicId, blogKey: profile.key, keyword, at: new Date().toISOString() });
       if (!skipLogs) try {
         const store = readSearchPerformance();
-        store.entries.push(createEntry({ keyword, topic: topicId, intent: generated.brief && generated.brief.intent || 'general', status, title: post.title || '', generatedAt: new Date().toISOString(), blogKey: profile.key, productKey: chosenProductKey }));
+        store.entries.push(createEntry({ keyword, topic: topicId, intent: generated.brief && generated.brief.intent || 'general', status, title: post.title || '', generatedAt: new Date().toISOString(), blogKey: profile.key, productKey: chosenProductKey, purpose }));
         store.entries = store.entries.slice(-500);
         writeSearchPerformance(store);
       } catch (error) { console.warn('[perf] 주제 성과 항목 저장 실패:', error.message); }
-      return { ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })), status, holdReasons, reviewReasons, brief: generated.brief || { intentLabel: purpose === 'home' ? '홈판용' : '검색 의도 미분류' }, contentCheck: generated.contentCheck || null, validation: generated.validation || null, factCheck: generated.factCheck || null, scrapeHealth: generated.scrapeHealth || null, meta: generated.meta || null, topic: { profileKey: profile.key, productKey: chosenProductKey, ctaUrl: context.ctaUrl, conflict: conflict || null } };
+      return { ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })), status, holdReasons, reviewReasons, brief: generated.brief || { intentLabel: purpose === 'home' ? '홈판용' : '검색 의도 미분류' }, contentCheck: generated.contentCheck || null, validation: generated.validation || null, factCheck: generated.factCheck || null, scrapeHealth: generated.scrapeHealth || null, meta: generated.meta || null, topic: { profileKey: profile.key, productKey: chosenProductKey, ctaUrl: context.ctaUrl, conflict: conflict || null, strategy: strategy ? { source: strategy.source, blogSlot: strategy.blogSlot, dominantFormat: strategy.dominantFormat, warnings: strategy.warnings, topTitles: strategy.topTitles || [] } : null } };
     } catch (error) { return { ok: false, error: error.message }; }
   }
   ipcMain.handle('generate:topic', async (_e, request = {}) => runTopicGeneration(request));
@@ -2251,6 +2268,18 @@ app.whenReady().then(async () => {
     if (index < 0) return { ok: false, error: '추적 항목을 찾지 못했습니다.' };
     try {
       store.entries[index] = linkManually(store.entries[index], url);
+      writeSearchPerformance(store);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
+  // 홈판 글 조회수 직접 기록(블로그 통계에서 본 값) — 홈판은 검색 순위로 성과를 볼 수 없다.
+  ipcMain.handle('perf:recordViews', async (_e, { id, views } = {}) => {
+    const store = readSearchPerformance();
+    const index = store.entries.findIndex((entry) => entry.id === id);
+    if (index < 0) return { ok: false, error: '추적 항목을 찾지 못했습니다.' };
+    try {
+      store.entries[index] = addManualStat(store.entries[index], { views });
       writeSearchPerformance(store);
       return { ok: true };
     } catch (error) { return { ok: false, error: error.message }; }
