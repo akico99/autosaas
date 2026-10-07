@@ -23,9 +23,44 @@ const { observeSerp } = require('../keyword/serpObserve');
 const scrapeHealth = require('../scrape/health');
 const { isSearchBlocked, getBlockState } = require('../scrape/naverSearchGuard');
 const { factCheckPost } = require('./factCheck');
-const { buildSearchBrief, collectOriginalSources, collectSourceMetadata } = require('./searchBrief');
+const { buildSearchBrief, collectOriginalSources, collectSourceMetadata, summarizeConnectContext } = require('./searchBrief');
 const { checkRequiredAnswers, detectExperienceClaims } = require('./searchContentCheck');
 const { topicEvidenceForIntent } = require('../topics/topicContext');
+
+// 수집기는 테스트·호출자가 주입할 수 있다. 주입하지 않으면 기존 수집 함수를 그대로 쓴다.
+const DEFAULT_COLLECTORS = Object.freeze({
+  fetchAutocomplete: (...args) => fetchAutocomplete(...args),
+  observeSerp: (...args) => observeSerp(...args),
+  gatherKeywordContext: (...args) => gatherKeywordContext(...args),
+  fetchNewsArticles: (...args) => fetchNewsArticles(...args),
+  fetchBlogFacts: (...args) => fetchBlogFacts(...args),
+  fetchPlaceReviews: (...args) => fetchPlaceReviews(...args),
+  fetchNearbyAttractions: (...args) => fetchNearbyAttractions(...args),
+  fetchPlaceInfo: (...args) => fetchPlaceInfo(...args),
+});
+
+// 여행 제휴 연결 원고는 국내/해외 여행 주제에서만 쓴다. 주제는 호출자가 고르고 여기서 추정하지 않는다.
+const CONNECT_TRAVEL_TOPICS = ['domestictravel', 'worldtravel'];
+const CONNECT_TRAVEL_MODEL = 'opus';
+
+// result.connect = 입력 ConnectContext 전체의 깊은 복사본(링크 원문 그대로) + 이번 생성에서 계산한 값(generation).
+// 원본 출처·사실·스냅샷·경험·promptBlock은 그대로 두고, 근거로 인정된 출처·사실은 generation 아래에만 둔다.
+function buildConnectMeta(connectContext, connect, { topic, generationModel, ignoredInputs }) {
+  const clone = (value) => JSON.parse(JSON.stringify(value == null ? null : value));
+  const { generation: _previous, ...context } = clone(connectContext);
+  void _previous;
+  return {
+    ...context,
+    generation: {
+      topic,
+      generationModel,
+      experienceProvided: !!connect.experience,
+      ignoredInputs: [...ignoredInputs],
+      evidenceSources: clone(connect.sources),
+      evidenceFacts: clone(connect.verifiedFacts),
+    },
+  };
+}
 
 // ★네이버 지도 검색어 = "지역 상호명"으로만(사용자 확정 2026-08-26). 프랜차이즈 지점 구분은 사용자가 가게 이름에 지점까지 적어줌(UI 안내).
 //   플레이스 조회로 얻은 공식 이름(지점명 포함) 앞에 지역(시/군)만 붙인다. 지역 못 뽑으면 상호명만.
@@ -60,8 +95,26 @@ async function extractMainKeyword(title, text, model, run = runClaude) {
   return String(out || '').trim().split('\n')[0].replace(/^["'\s]+|["'\s]+$/g, '').slice(0, 30);
 }
 
-async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false, keywordSources, run, factCheckRun, contentCheckRun, topicContext } = {}) {
+async function generateSearchPost({ topic, keyword, extra, style, memo, paid, commerce, source, linkNote, persona, avoidKeywords, officialFacts, review, model, maxAttempts = 3, strictEvidence = false, keywordSources, run, factCheckRun, contentCheckRun, topicContext, connectContext, collectors } = {}) {
   const searchTopic = getSearchTopic(topic); // 잘못된 주제면 여기서 예외
+  const connect = summarizeConnectContext(connectContext);
+  const ignoredInputs = [];
+  if (connect) {
+    if (connect.connectKind !== 'travel') throw new Error('제휴 연결 원고 생성은 여행(travel) 상품만 지원합니다.');
+    if (!CONNECT_TRAVEL_TOPICS.includes(topic)) throw new Error('여행 제휴 연결 원고의 주제는 domestictravel 또는 worldtravel 이어야 합니다.');
+    // 연결 원고의 경험은 connectContext.experience로만 받는다. 기존 메모·내돈내산·리뷰 입력은 무시하고
+    // 그에 딸린 프롬프트 지시와 리뷰 수집(블로그·후기·근처 명소)도 실행하지 않는다.
+    if (String(memo || '').trim()) ignoredInputs.push('memo');
+    if (String(paid || '').trim()) ignoredInputs.push('paid');
+    if (review != null) ignoredInputs.push('review');
+    memo = '';
+    paid = '';
+    review = null;
+  }
+  const io = { ...DEFAULT_COLLECTORS, ...(collectors && typeof collectors === 'object' ? collectors : {}) };
+  // 생성 모델: 호출자가 지정하면 그대로, 여행 연결 원고만 기본 opus. 검수(팩트 대조·필수 답변)는 기존 Haiku 그대로.
+  const generationModel = model || (connect ? CONNECT_TRAVEL_MODEL : model);
+  const connectMeta = connect ? buildConnectMeta(connectContext, connect, { topic, generationModel, ignoredInputs }) : null;
   scrapeHealth.reset(); // 이번 생성의 수집 진단만 담기게 초기화
   if (officialFacts && officialFacts.error) {
     const error = officialFacts.error;
@@ -81,7 +134,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       resultKind: 'error',
     });
   }
-  const system = buildSearchSystemPrompt(topic);
+  const system = connect ? buildSearchSystemPrompt(topic, { connectContext }) : buildSearchSystemPrompt(topic);
   const modelRunner = typeof run === 'function' ? run : (args) => runClaude(args);
 
   // ★링크형 — 키워드 없이 링크만 준 경우, 링크 제목에서 "네이버 검색용 메인 키워드" 1개를 뽑는다(가벼운 하이쿠).
@@ -94,26 +147,27 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
 
   // 같은 검색 목적의 자동완성 후보를 모아 기획 단계에서 걸러 사용한다.
   let autocomplete = [];
-  if (kw) { try { autocomplete = (await fetchAutocomplete(kw)) || []; } catch (e) { autocomplete = []; } }
+  if (kw) { try { autocomplete = (await io.fetchAutocomplete(kw)) || []; } catch (e) { autocomplete = []; } }
 
   let serp = null;
   if (kw && !review && !source) {
-    try { serp = await observeSerp(kw); } catch (e) { serp = { measured: false, blocked: false, reason: e.message }; }
+    try { serp = await io.observeSerp(kw); } catch (e) { serp = { measured: false, blocked: false, reason: e.message }; }
   }
 
   // ★★검색 의도 파악의 핵심 = 배경 조사(홈판과 동일). "왜 이 키워드를 검색하는지"(예: 하영=증조부 친일 논란·노윤서와 그림 비교)를
   //   최신 뉴스 + 인물이면 나무위키로 가져와, 프롬프트가 실제 맥락을 알고 쓰게 한다. (엔터형=인물 배경조사)
   let keywordFacts = null, keywordBackground = null, newsArticles = null;
-  if (kw && !review && topic !== 'review') { // ★리뷰형(장소 내돈내산 + 상품리뷰)은 내 경험·실제후기가 근거 → 뉴스·나무위키 조사 안 함(소비자원 비교표·경쟁사 점수 같은 엉뚱한 사실 유입 방지)
+  // 제휴 연결 원고는 등록 상품 근거가 우선이라 일반 뉴스·배경 조사를 상품 근거로 수집하지 않는다.
+  if (kw && !review && topic !== 'review' && !connect) { // ★리뷰형(장소 내돈내산 + 상품리뷰)은 내 경험·실제후기가 근거 → 뉴스·나무위키 조사 안 함(소비자원 비교표·경쟁사 점수 같은 엉뚱한 사실 유입 방지)
     try {
       const isPerson = familyOf(topic) === 'A'; // 엔터형(방송·연예·드라마·영화·스타 등) = 인물 배경조사
-      const ctx = await gatherKeywordContext(kw, { isPerson });
+      const ctx = await io.gatherKeywordContext(kw, { isPerson });
       keywordFacts = ctx.keywordFacts; keywordBackground = ctx.keywordBackground;
       if (!keywordSources && Array.isArray(ctx.keywordSources)) keywordSources = ctx.keywordSources;
     } catch (e) { /* 조사 실패해도 글은 나온다 */ }
     // ★★뉴스 기사 "본문 전체"를 읽어온다 — 제목·스니펫만으론 경기 세부(라인업·챔피언·세트별)를 몰라 모델이 지어냄(치명적).
     //   실제 본문(인터뷰 발언 포함)을 넘겨야 정확히 쓴다. 스포츠·e스포츠·연예·일반뉴스 모두 대응.
-    try { newsArticles = await fetchNewsArticles(kw, { limit: 3 }); } catch (e) { newsArticles = null; }
+    try { newsArticles = await io.fetchNewsArticles(kw, { limit: 3 }); } catch (e) { newsArticles = null; }
   }
   // ★★리뷰형에서 "방송에 나왔다"고 한 장소 → 그 방송의 "몇 회·언제 방영" 등 구체 정보를 블로그·뉴스에서 검색해 채운다.
   //   (사용자 확정: 유명인이 왔다가 아니라 "무슨 방송에 나왔다"면 검색해서 회차·방영일을 알려주면 검색용 궁금증이 해결된다.)
@@ -123,7 +177,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       if (!tv) continue;
       try {
         const q = ((p.biz || p.place || '') + ' ' + tv).trim();
-        const facts = await fetchBlogFacts(q); // 상호명+방송명으로 블로그 검색(회차·방영일이 블로그 후기에 자주 있음)
+        const facts = await io.fetchBlogFacts(q); // 상호명+방송명으로 블로그 검색(회차·방영일이 블로그 후기에 자주 있음)
         if (Array.isArray(facts) && facts.length) p.tvFacts = facts.slice(0, 4);
       } catch (e) { /* 실패해도 글은 나온다 */ }
     }
@@ -137,7 +191,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       for (const p of review.places.slice(0, 3)) {
         const nm = (p.mapQuery || p.biz || p.place || '').trim();
         if (!nm) continue;
-        const revs = await fetchPlaceReviews(nm);
+        const revs = await io.fetchPlaceReviews(nm);
         (revs || []).forEach((r) => { const t = (r || '').trim(); if (t && !_seenR.has(t)) { _seenR.add(t); placeReviews.push(t); } });
       }
       placeReviews = placeReviews.slice(0, 10);
@@ -145,7 +199,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
   } else if (topic === 'review' && kw) {
     // ★상품 리뷰 = 제품명으로 "실제 사용 후기"(네이버 블로그)를 가져와 스펙·사용감을 실제 후기에서 채운다(지어냄 방지 — 맛집/여행과 동일 방식).
     try {
-      const revs = await fetchPlaceReviews(kw); // "제품명 후기"로 검색
+      const revs = await io.fetchPlaceReviews(kw); // "제품명 후기"로 검색
       const _seen = new Set();
       (revs || []).forEach((r) => { const t = (r || '').trim(); if (t && !_seen.has(t)) { _seen.add(t); placeReviews.push(t); } });
       placeReviews = placeReviews.slice(0, 10);
@@ -161,7 +215,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       const _mq = (review.places[0].mapQuery || review.places[0].region || '').trim();
       const region = (_mq.split(/\s+/)[0] || '').replace(/(시|군|구)$/, '') || _mq.split(/\s+/)[0];
       if (region) {
-        const near = await fetchNearbyAttractions(region);
+        const near = await io.fetchNearbyAttractions(region);
         const bizNames = review.places.map((p) => (p.biz || p.place || '').replace(/\s+/g, ''));
         // 리뷰 대상 가게 자신은 근처추천에서 제외
         nearbyAttractions = (near || []).filter((n) => !bizNames.some((b) => b && n.replace(/\s+/g, '').includes(b))).slice(0, 5);
@@ -183,22 +237,25 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
   const baseBrief = buildSearchBrief({
     keyword: kw, topic, review, source, memo, paid, style, autocomplete,
     newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews,
-    searchBlocked, serp,
+    searchBlocked, serp, ...(connect ? { connectContext } : {}),
   });
   // 서비스 사실은 서비스 안내에 한해 원문 근거로 인정한다. 최신 이슈로 분류된 원고에는 넣지 않는다.
   const topicEvidence = topicEvidenceForIntent(topicContext && topicContext.evidenceSource, baseBrief.intent);
   const generationKeywordSources = topicEvidence.length
     ? [...(Array.isArray(keywordSources) ? keywordSources : []), ...topicEvidence]
     : keywordSources;
-  const originalSources = collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources: generationKeywordSources });
+  const legacyOriginalSources = collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources: generationKeywordSources });
+  // 상품 근거는 전용 출처 유형으로 앞에 둔다. 기존 원문 판별은 그대로 유지된다.
+  const originalSources = connect ? [...connect.sources, ...legacyOriginalSources] : legacyOriginalSources;
   const sourceMetadata = collectSourceMetadata({ source, officialFacts, newsArticles, keywordFacts, keywordSources: generationKeywordSources });
   const brief = topicEvidence.length ? buildSearchBrief({
     keyword: kw, topic, review, source, memo, paid, style, autocomplete,
     newsArticles, keywordFacts, keywordSources: generationKeywordSources, officialFacts, placeReviews,
-    searchBlocked, serp,
+    searchBlocked, serp, ...(connect ? { connectContext } : {}),
   }) : baseBrief;
-  if (strictEvidence && brief.preHoldReasons.length) {
-    return {
+  // 연결 원고는 근거가 부족하면 strictEvidence와 무관하게 생성 전에 보류하고 맥락을 그대로 돌려준다.
+  if ((strictEvidence || connect) && brief.preHoldReasons.length) {
+    const held = {
       post: null,
       status: 'hold',
       holdReasons: brief.preHoldReasons,
@@ -211,6 +268,8 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       meta: { sources: sourceMetadata },
       scrapeHealth: scrapeHealth.report(),
     };
+    if (connectMeta) held.connect = connectMeta;
+    return held;
   }
 
   let best = null;
@@ -223,6 +282,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
       cand.factCheck = await factCheckPost({
         post: cand.post, facts: keywordFacts, articles: newsArticles,
         background: keywordBackground, placeReviews, officialFacts, originalSources,
+        ...(connect ? { includeStructured: true } : {}),
         run: typeof factCheckRun === 'function' ? factCheckRun : modelRunner,
       });
     } catch (e) { cand.factCheck = { ran: false, issues: [], highCount: 0, reason: e.message }; }
@@ -237,6 +297,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     cand.holdReasons = status.holdReasons;
     cand.reviewReasons = status.reviewReasons;
     cand.brief = brief;
+    if (connectMeta) cand.connect = connectMeta;
     return cand;
   };
 
@@ -250,8 +311,8 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
           }
         : null;
 
-    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources: generationKeywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext });
-    const { text, meta: generatedMeta } = await modelRunner({ system, user, model });
+    const user = buildSearchUserPrompt({ topicKey: topic, keyword: kw, extra, retry, autocomplete: brief.autocomplete.selected, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources: generationKeywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext, ...(connect ? { connectContext } : {}) });
+    const { text, meta: generatedMeta } = await modelRunner({ system, user, model: generationModel });
     const meta = { ...(generatedMeta || {}), sources: sourceMetadata };
     // ★JSON 파싱 실패도 재시도 대상 — 마지막 시도가 아니면 다시 생성.
     let post;
@@ -340,7 +401,7 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
         const uniq = [...new Set(names.map((n) => (n || '').trim()).filter(Boolean))].slice(0, 6);
         if (uniq.length) {
           const fetched = await Promise.all(uniq.map(async (nm) => {
-            try { return await fetchPlaceInfo(nm); } catch (e) { return null; }
+            try { return await io.fetchPlaceInfo(nm); } catch (e) { return null; }
           }));
           const travelInfo = fetched
             .filter((info) => info && (info.roadAddress || info.address))

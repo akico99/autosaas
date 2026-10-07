@@ -24,10 +24,17 @@ if (![...invoked].some((c) => !handled.has(c))) ok(`IPC 채널 ${invoked.size}�
 // 2) 렌더러 window.api.* vs preload 노출
 const exposed = new Set([...preload.matchAll(/^\s*(\w+):\s*\(/gm)].map((m) => m[1]));
 const pages = ['app/app.html', 'app/login.html'];
+const externalRendererScripts = ['app/travel-connect.js'];
 let missing = 0;
 for (const pg of pages) {
   const used = new Set([...read(pg).matchAll(/window\.api\.(\w+)/g)].map((m) => m[1]));
   for (const u of used) if (!exposed.has(u)) { bad(`${pg}: window.api.${u} 가 preload에 없음`); missing++; }
+}
+for (const file of externalRendererScripts) {
+  const script = read(file);
+  for (const method of new Set([...script.matchAll(/\bapi\.(\w+)\s*\(/g)].map((m) => m[1]))) {
+    if (!exposed.has(method)) bad(`${file}: api.${method} 가 preload에 없음`);
+  }
 }
 if (!missing) ok('렌더러가 쓰는 window.api.* 전부 preload에 노출됨');
 
@@ -44,6 +51,7 @@ for (const pg of pages) {
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   scripts.forEach((m, i) => checkJs(`${pg}#${i}`, m[1]));
 }
+for (const file of externalRendererScripts) checkJs(file, read(file));
 for (const f of ['electron/main.js', 'electron/preload.js']) checkJs(f, read(f));
 const walk = (d) => fs.readdirSync(path.join(root, d), { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : (e.name.endsWith('.js') ? [path.join(d, e.name)] : []));
 for (const f of walk('src')) checkJs(f, read(f));

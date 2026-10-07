@@ -1,4 +1,5 @@
 const { familyOf, TONES_WITH_NOTE } = require('./searchTopics');
+const { isConnectKind } = require('../connect/policy');
 
 const STANDARD_VERSION = 'search-standard-v1-2026-10-04';
 
@@ -384,6 +385,156 @@ function hasOfficialEvidence(value) {
   return value.pages.some(isInstitutionPage);
 }
 
+// 제휴 상품 근거는 기관·기사 원문과 다른 좁은 출처 유형으로만 다룬다.
+// 검토된 full-page/user-excerpt 출처의 저장된 발췌만 쓰며, 전체 본문이나 공식 자료로 표시하지 않는다.
+const CONNECT_SOURCE_TYPES = Object.freeze({
+  'full-page': Object.freeze({ sourceType: 'connect-product-page', provenance: 'connect-full-page', label: '상품 상세 원문에서 검토한 발췌' }),
+  'user-excerpt': Object.freeze({ sourceType: 'connect-user-excerpt', provenance: 'connect-user-excerpt', label: '사용자가 제공한 상품 발췌' }),
+});
+const CONNECT_SOURCE_BY_TYPE = new Map(Object.values(CONNECT_SOURCE_TYPES).map((def) => [def.sourceType, def]));
+const compactText = (value) => String(value == null ? '' : value).replace(/[\s,]/g, '');
+
+// 공백·쉼표를 무시한 포함 검사. 숫자로 시작·끝나는 발췌는 다른 숫자 중간에 걸치지 않아야 한다("9,000원"은 "129,000원"의 근거가 아님).
+function anchoredIncludes(haystack, needle) {
+  if (!needle) return false;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    const before = haystack[index - 1];
+    const after = haystack[index + needle.length];
+    const startsWithDigit = /\d/.test(needle[0]);
+    const endsWithDigit = /\d/.test(needle[needle.length - 1]);
+    const okBefore = !(startsWithDigit && before && /[\d.]/.test(before));
+    const okAfter = !(endsWithDigit && after && /\d/.test(after));
+    if (okBefore && okAfter) return true;
+    index = haystack.indexOf(needle, index + 1);
+  }
+  return false;
+}
+
+function connectProductIds(connectContext) {
+  const snapshots = connectContext && Array.isArray(connectContext.productSnapshots) ? connectContext.productSnapshots : [];
+  return new Set(snapshots.filter((p) => p && p.id).map((p) => String(p.id)));
+}
+
+// 사실이 출처를 근거로 인정받는 조건. 출처 선별과 사실 집계가 같은 규칙을 쓴다.
+function connectFactCitesSource(fact, source, knownProducts) {
+  const id = String(source && source.id || '').trim();
+  return !!(fact && id && fact.status === 'verified' && fact.sourceId === id
+    && fact.verificationBasis === source.accessLevel
+    && knownProducts.has(String(fact.productId || ''))
+    && String(fact.excerpt || '').trim()
+    && anchoredIncludes(compactText(source.excerpt), compactText(fact.excerpt)));
+}
+
+function isConnectSourceType(sourceType) {
+  return CONNECT_SOURCE_BY_TYPE.has(String(sourceType || ''));
+}
+
+function connectSourceLabel(source) {
+  const def = source && CONNECT_SOURCE_BY_TYPE.get(source.sourceType);
+  return def ? def.label : '';
+}
+
+function isConnectProductSource(source) {
+  if (!source || typeof source !== 'object') return false;
+  const def = CONNECT_SOURCE_BY_TYPE.get(source.sourceType);
+  const text = String(source.text || '').trim();
+  return !!def && source.provenance === def.provenance && source.kind === def.sourceType
+    && source.contentKind === 'reviewed-excerpt' && source.official !== true
+    && isValidHttpUrl(source.url) && !!text && /[\p{L}\p{N}]/u.test(text);
+}
+
+// 맥락의 출처 중 검토된 사실이 같은 근거 유형으로 인용한 것만 상품 근거로 쓴다.
+function collectConnectSources(connectContext) {
+  if (!connectContext || typeof connectContext !== 'object') return [];
+  const facts = Array.isArray(connectContext.verifiedFacts) ? connectContext.verifiedFacts : [];
+  const knownProducts = connectProductIds(connectContext);
+  const out = [];
+  const seen = new Set();
+  for (const source of Array.isArray(connectContext.sources) ? connectContext.sources : []) {
+    if (!source || typeof source !== 'object') continue;
+    if (!Object.prototype.hasOwnProperty.call(CONNECT_SOURCE_TYPES, source.accessLevel)) continue;
+    const def = CONNECT_SOURCE_TYPES[source.accessLevel];
+    const id = String(source.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    const excerpt = String(source.excerpt || '').trim();
+    const citing = facts.filter((fact) => connectFactCitesSource(fact, source, knownProducts));
+    if (!citing.length) continue;
+    const candidate = {
+      url: String(source.url || '').trim(),
+      title: '',
+      text: excerpt,
+      sourceType: def.sourceType,
+      kind: def.sourceType,
+      contentKind: 'reviewed-excerpt',
+      original: true,
+      official: false,
+      verified: false,
+      provenance: def.provenance,
+      accessLevel: source.accessLevel,
+      sourceId: id,
+      productIds: [...new Set(citing.map((fact) => String(fact.productId || '')).filter(Boolean))],
+      collectedAt: String(source.collectedAt || '').trim(),
+      publishedAt: String(source.publishedAt || '').trim(),
+    };
+    if (!isConnectProductSource(candidate)) continue;
+    seen.add(id);
+    out.push(candidate);
+  }
+  return out;
+}
+
+// 생성기에서 쓰는 연결 맥락 요약. 근거로 인정되는 사실은 유효한 상품 출처를 인용한 것뿐이다.
+function summarizeConnectContext(connectContext) {
+  if (connectContext == null) return null;
+  if (typeof connectContext !== 'object' || !isConnectKind(connectContext.connectKind)) {
+    throw new Error('connectContext 형식이 올바르지 않습니다.');
+  }
+  const snapshots = Array.isArray(connectContext.productSnapshots) ? connectContext.productSnapshots.filter((p) => p && p.id) : [];
+  if (!snapshots.length) throw new Error('connectContext에 상품이 없습니다.');
+  const sources = collectConnectSources(connectContext);
+  const knownProducts = connectProductIds(connectContext);
+  const sourceIds = new Set(sources.map((source) => source.sourceId));
+  const rawSources = (Array.isArray(connectContext.sources) ? connectContext.sources : [])
+    .filter((source) => source && sourceIds.has(String(source.id || '').trim()));
+  const verifiedFacts = (Array.isArray(connectContext.verifiedFacts) ? connectContext.verifiedFacts : [])
+    .filter((fact) => rawSources.some((source) => connectFactCitesSource(fact, source, knownProducts)));
+  return {
+    connectKind: connectContext.connectKind,
+    products: snapshots.map((p) => ({ id: String(p.id), name: String(p.name || p.id) })),
+    sources,
+    verifiedFacts,
+    experience: String(connectContext.experience || '').trim(),
+    requiredAnswers: (Array.isArray(connectContext.requiredAnswers) ? connectContext.requiredAnswers : []).filter((a) => a && a.id && a.question),
+    uncertainFields: Array.isArray(connectContext.uncertainFields) ? connectContext.uncertainFields.map(String) : [],
+  };
+}
+
+function connectRequiredAnswers(view) {
+  const names = new Map(view.products.map((p) => [p.id, p.name]));
+  const answers = [
+    { id: 'connect-choice', label: '상품 선택 기준(누구에게 맞는지·다른 선택지와 다른 점)' },
+    { id: 'connect-before-booking', label: '예약 전 확인할 점(확인되지 않은 조건은 "예약 페이지에서 확인 필요"로 안내)' },
+  ];
+  const grouped = new Map();
+  view.requiredAnswers.forEach((item) => {
+    const id = String(item.id);
+    if (!grouped.has(id)) grouped.set(id, { question: String(item.question), products: [] });
+    const name = names.get(item.productId) || String(item.productId || '');
+    if (name && !grouped.get(id).products.includes(name)) grouped.get(id).products.push(name);
+  });
+  grouped.forEach((value, id) => {
+    answers.push({
+      id: 'connect-' + id,
+      label: value.question + (value.products.length ? ' (해당 상품: ' + value.products.join(', ') + ')' : '')
+        + ' — 등록 상품 근거가 없으면 "예약 페이지에서 확인 필요"로 답한다',
+    });
+  });
+  return answers;
+}
+
+const CONNECT_NO_EVIDENCE_HOLD = '등록 상품에 검토된 상품 근거(상세 원문·사용자 발췌)가 없음';
+
 function hasRelevantOriginal(intent, originalSources, experienceInput) {
   if (intent === 'experience') return experienceInput;
   if (intent === 'news') return originalSources.some((source) => ['user-source', 'institution-page', 'news-article'].includes(source.sourceType));
@@ -455,13 +606,15 @@ function calibrateIntentWithSerp(classified, serp) {
 
 function buildSearchBrief({
   keyword, topic, review, source, memo, paid, style, autocomplete,
-  newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews, searchBlocked, serp,
+  newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews, searchBlocked, serp, connectContext,
 } = {}) {
+  const connect = summarizeConnectContext(connectContext);
   const originalSources = collectOriginalSources({ source, newsArticles, keywordFacts, keywordSources, officialFacts });
   const newsOriginals = originalSources.filter((item) => item.sourceType === 'news-article').length;
   const institutionOriginals = originalSources.filter((item) => item.sourceType === 'institution-page').length;
   const userOriginals = originalSources.filter((item) => item.sourceType === 'user-source').length;
-  const experienceInput = hasExperienceInput({ review, paid, memo });
+  // 연결 원고의 경험은 맥락의 experience로만 인정한다. 메모·내돈내산·리뷰 입력은 경험 근거가 아니다.
+  const experienceInput = connect ? !!connect.experience : hasExperienceInput({ review, paid, memo });
   const evidence = {
     news: countEvidence(newsArticles),
     facts: countEvidence(keywordFacts),
@@ -474,10 +627,21 @@ function buildSearchBrief({
     experienceInput,
     searchBlocked: searchBlocked === true,
   };
-  const baseClassified = classifyIntent({
-    keyword, topic, review, source, paid,
-    newsCount: evidence.news, factCount: evidence.facts,
-  });
+  if (connect) {
+    evidence.connectSources = connect.sources.length;
+    evidence.connectFacts = connect.verifiedFacts.length;
+  }
+  // 제휴 상품 글은 직접 경험이 있을 때만 경험형이고, 없으면 상품 정보·비교형으로 쓴다.
+  const baseClassified = connect
+    ? (experienceInput
+      ? { intent: 'experience', ambiguous: false, reason: '제휴 상품과 작성자 경험 입력이 있어 경험 의도로 분류' }
+      : connect.products.length > 1
+        ? { intent: 'compare', ambiguous: false, reason: '직접 경험 없는 제휴 상품 여러 개 — 비교 의도로 분류' }
+        : { intent: 'general', ambiguous: false, reason: '직접 경험 없는 제휴 상품 — 상품 정보 의도로 분류' })
+    : classifyIntent({
+      keyword, topic, review, source, paid,
+      newsCount: evidence.news, factCount: evidence.facts,
+    });
   const calibration = calibrateIntentWithSerp(baseClassified, serp);
   const classified = calibration.classified;
   const intent = INTENTS[classified.intent] ? classified.intent : 'general';
@@ -488,11 +652,13 @@ function buildSearchBrief({
 
   if (evidence.searchBlocked) {
     warnings.push('네이버 검색 제한 — 제공된 원문·경험 자료의 충족 여부를 확인하세요');
-    if (!hasRelevantOriginal(intent, originalSources, experienceInput)) {
+    const connectRelevant = !!(connect && (connect.sources.length || experienceInput));
+    if (!connectRelevant && !hasRelevantOriginal(intent, originalSources, experienceInput)) {
       preHoldReasons.push('네이버 검색 제한으로 근거 자료를 가져오지 못함');
     }
   }
 
+  if (connect && !connect.verifiedFacts.length) preHoldReasons.push(CONNECT_NO_EVIDENCE_HOLD);
   if (intent === 'news' && newsOriginals === 0 && userOriginals === 0 && institutionOriginals === 0) {
     preHoldReasons.push('최신 이슈 글인데 확인한 기사·뉴스 자료가 없음');
   }
@@ -504,13 +670,15 @@ function buildSearchBrief({
     warnings.push('경험형 말투지만 경험 입력이 없어 정보 전달 문체로 작성함');
   }
 
-  return {
+  const requiredAnswers = definition.requiredAnswers.map((item) => ({ ...item }));
+  if (connect) requiredAnswers.push(...connectRequiredAnswers(connect));
+  const brief = {
     version: STANDARD_VERSION,
     intent,
     intentLabel: definition.label,
     ambiguous: classified.ambiguous,
     reason: classified.reason,
-    requiredAnswers: definition.requiredAnswers.map((item) => ({ ...item })),
+    requiredAnswers,
     minChars: definition.minChars,
     targetChars: [...definition.targetChars],
     minHeadings: definition.minHeadings,
@@ -520,6 +688,15 @@ function buildSearchBrief({
     preHoldReasons,
     warnings,
   };
+  if (connect) {
+    brief.connect = {
+      productCount: connect.products.length,
+      verifiedFactCount: connect.verifiedFacts.length,
+      sourceCount: connect.sources.length,
+      experienceProvided: !!connect.experience,
+    };
+  }
+  return brief;
 }
 
 module.exports = {
@@ -538,5 +715,11 @@ module.exports = {
   hasOfficialEvidence,
   collectOriginalSources,
   collectSourceMetadata,
+  CONNECT_SOURCE_TYPES,
+  isConnectSourceType,
+  isConnectProductSource,
+  connectSourceLabel,
+  collectConnectSources,
+  summarizeConnectContext,
   STANDARD_VERSION,
 };

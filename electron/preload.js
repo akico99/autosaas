@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('api', {
   generatePost: (type, keyword, tone, style, extras) =>
     ipcRenderer.invoke('generate:post', { type, keyword, tone, style, ...(extras || {}) }),
   generateTopic: (request) => ipcRenderer.invoke('generate:topic', request || {}),
+  connectCatalog: () => ipcRenderer.invoke('connect:catalog', {}),
+  connectSaveProduct: (request) => ipcRenderer.invoke('connect:saveProduct', request || {}),
+  connectPrepareKeywords: (request) => ipcRenderer.invoke('connect:prepareKeywords', request || {}),
+  connectPrepareDelivery: (request) => ipcRenderer.invoke('connect:prepareDelivery', request || {}),
   // 원고 보관함 — 미리 생성·불러오기·수정·삭제·에디터 넣기 표시
   topicDraftsList: (topicId) => ipcRenderer.invoke('topicDrafts:list', topicId || 'saju'),
   topicDraftsGenerate: (request) => ipcRenderer.invoke('topicDrafts:generate', request || {}),

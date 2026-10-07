@@ -11,7 +11,20 @@
 const { OUTPUT_SCHEMA } = require('./buildPrompt');
 const { getSearchTopic, familyOf, SEARCH_FAMILIES, TONES_WITH_NOTE } = require('./searchTopics');
 const { MAX_QUOTES } = require('./postTypes');
-const { buildSearchBrief, collectOriginalSources, isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText } = require('./searchBrief');
+const { buildSearchBrief, collectOriginalSources, isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText, summarizeConnectContext, connectSourceLabel } = require('./searchBrief');
+
+// 제휴 상품 연결 글의 유형 안내. 여행 주제 기본 유형(경험담)의 방문 경험 요구를 대신한다.
+function connectFamilyGuide(connect) {
+  if (connect.experience) {
+    return '[유형=여행 상품 정보·비교 + 작성자 경험] 등록된 제휴 상품의 검토된 근거로 상품 조건·선택 기준·예약 전 확인할 점을 정리한다. 1인칭 경험은 사용자 입력의 "작성자 경험"에 적힌 범위에서만 쓰고, 그 밖의 경험·후기는 지어내지 않는다.';
+  }
+  return '[유형=여행 상품 정보·비교] 등록된 제휴 상품의 검토된 근거로 상품 구성·조건·선택 기준·예약 전 확인할 점을 정리한다. 이 글에는 작성자의 직접 이용 경험이 없으므로 1인칭 이용담이나 남의 후기를 전하는 서술을 하지 않는다.';
+}
+
+function connectMustInclude(topicKey) {
+  const base = '상품 구성·일정 + 선택한 옵션의 가격 기준(검토된 것만) + 포함/불포함 + 취소·환불·변경 조건 + 상품 선택 기준(누구에게 맞는지) + 예약 전 확인할 점';
+  return topicKey === 'worldtravel' ? base + ' + 항공·비자·환전 등 여행 준비(근거가 있을 때만)' : base;
+}
 
 // ★말투 16개(유형 A/B/C/D × 4) 상세 문체 지시. 유형별 기본 말투는 UI가 자동 선택, 여기서 "어떻게 쓸지"를 지시. 전부 존댓말.
 //   ★어떤 말투든 공통: 어려운 용어는 반드시 쉽게 풀어서 설명한다.
@@ -71,9 +84,11 @@ function familyGuide(fam) {
   return M[fam] || '';
 }
 
-function buildSearchSystemPrompt(topicKey) {
+function buildSearchSystemPrompt(topicKey, { connectContext } = {}) {
   const t = getSearchTopic(topicKey);
   const fam = familyOf(topicKey);
+  const connect = summarizeConnectContext(connectContext);
+  const mustInclude = connect ? connectMustInclude(topicKey) : t.mustInclude;
   return [
     '너는 검색자의 질문과 확인된 근거를 중심으로 검색용 블로그 원고를 작성한다.',
     '홈판(발견형)과 다르다: 검색은 "명확한 정보 탐색 목적"을 가진 사람에게 노출된다.',
@@ -93,8 +108,8 @@ function buildSearchSystemPrompt(topicKey) {
     '- ★★검색용은 "같은 종류·대안과의 비교"를 넣으면 좋다(검색자가 "그래서 이게 다른 것과 뭐가 다른데?"를 궁금해함). 예: "태국 점성술"이면 → 자미두수·서양 별자리 점성술·사주와 어떻게 다른지 비교 / "○○ 지원금"이면 → 비슷한 다른 지원금과 대상·금액 비교 / 제품이면 경쟁·이전모델 비교. 억지 비교는 말고 그 주제에 자연스러운 대안이 있을 때.',
     '',
     `[이번 글 주제] ${t.group} > ${t.label}`,
-    familyGuide(fam),
-    t.mustInclude ? `[주제별 내용 후보 — 아래에서 [원고 기획]의 의도에 맞는 항목만 사용] ${t.mustInclude}` : '',
+    connect ? connectFamilyGuide(connect) : familyGuide(fam),
+    mustInclude ? `[주제별 내용 후보 — 아래에서 [원고 기획]의 의도에 맞는 항목만 사용] ${mustInclude}` : '',
     '문체=정상 산문. 좌측정렬 문단. ★문단 길이는 "모바일 화면 기준"으로 잡아 2~4문장마다 끊는다(PC로 보면 짧아 보여도 모바일에선 딱 좋다). 진지·정보 전달 톤.',
     '',
     '[제목 규칙 — 검색용]',
@@ -206,8 +221,9 @@ function buildSearchSystemPrompt(topicKey) {
     .join('\n');
 }
 
-function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext } = {}) {
+function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, style, memo, paid, commerce, source, linkNote, persona, keywordFacts, keywordBackground, keywordSources, avoidKeywords, officialFacts, newsArticles, review, placeReviews, nearbyAttractions, originalSources, brief, topicContext, connectContext } = {}) {
   const t = getSearchTopic(topicKey);
+  const connect = summarizeConnectContext(connectContext);
   const evidenceSources = (Array.isArray(originalSources) ? originalSources
     : collectOriginalSources({ source, officialFacts, newsArticles, keywordFacts, keywordSources })).filter((item) => {
     if (!item || !isValidHttpUrl(item.url) || !meaningfulText(item.text || item.body)) return false;
@@ -216,7 +232,7 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     if (item.sourceType === 'news-article') return isArticleBody(item);
     return false;
   });
-  const generationBrief = brief || buildSearchBrief({ keyword, topic: topicKey, review, source, memo, paid, style, autocomplete, newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews });
+  const generationBrief = brief || buildSearchBrief({ keyword, topic: topicKey, review, source, memo, paid, style, autocomplete, newsArticles, keywordFacts, keywordSources, officialFacts, placeReviews, connectContext: connect ? connectContext : undefined });
   const lines = [];
   lines.push(`주제: ${t.group} > ${t.label}`);
   // ★★주제 × 키워드 관계 규칙 — 키워드가 주제와 맞으면 "주제의 관점"으로, 안 맞으면 "키워드 내용" 그대로.
@@ -229,7 +245,7 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     lines.push('- ★소개하는 장소마다 소제목에 "정확한 상호명/장소명"을 넣고, 그 장소를 {"kind":"map","place":"상호명"} 블록으로도 표시하라. 주소·영업시간 같은 정보 줄은 앱이 네이버 플레이스에서 실제로 가져와 자동으로 넣으니, 네가 주소·영업시간을 지어내지 마라(모르면 비워라).');
   }
   // ★★★내돈내산 리뷰형(검색용) — 사용자가 실제 다녀온 장소·경험을 준다. 그 경험만으로 "검색 노출용 후기"를 쓴다.
-  if (review && Array.isArray(review.places) && review.places.length) {
+  if (!connect && review && Array.isArray(review.places) && review.places.length) {
     const isTravel = review.target === 'travel';
     lines.push('');
     lines.push(`[★★★내돈내산 리뷰 — 내가 실제로 다녀온 ${isTravel ? '여행' : '곳'}. 아래 "내 경험"만 근거로 쓴다(없는 사실·다른 지점·지어낸 메뉴 금지)]`);
@@ -326,18 +342,25 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
     lines.push(`[글쓴이 시점] 이 글은 "${persona}"인 사람이 쓴 글이다. ★★단 프로필을 그대로 나열하지 마라 — "저는 30대 경기도 애 둘 키우는 워킹맘이라~"처럼 프로필을 통째로 읊는 건 금지(키워드 내용과 상관없으면 글이 따로 논다). 대신 이 사람의 "처지·관심사·시선"을 "${keyword || '이 키워드'}" 내용에 자연스럽게 녹여라: 그 나이대·상황의 사람이 이 주제를 왜 궁금해하고 어떤 점을 신경 쓸지의 "각도"로 쓴다. 예) 20대 사회초년생이면 "저 같은 사회초년생 입장에선~", 아이 키우는 부모면 "아이 키우다 보니~"처럼, 그 처지가 키워드와 "실제로 맞물릴 때만" 슬쩍 드러낸다(억지로 프로필을 끼워넣지 말 것). 주어지지 않은 구체 사실(금액·회사명·날짜)은 지어내지 마라.`);
   }
   // 글쓴이 경험 메모는 입력에 적힌 사실의 범위에서만 1인칭 근거로 사용한다.
-  if (memo) {
+  // 연결 원고의 경험은 맥락의 "작성자 경험"으로만 들어온다. 메모·내돈내산 지시는 쓰지 않는다.
+  if (memo && !connect) {
     lines.push(`[글쓴이가 실제로 겪은 것] ${memo}`);
     lines.push('- 메모에 적힌 사실만 1인칭 경험으로 쓴다. 메모에 없는 시간·가격·대화·맛·감각 같은 디테일을 추가하지 않는다. 부족한 분량은 근거 있는 정보로 채운다.');
   }
   // ★내돈내산/협찬 — 1인칭 경험담체에서 신뢰·투명성 반영.
-  if (paid === 'mine') {
+  if (connect) {
+    // 연결 원고는 아래 제휴 상품 규칙과 고지문으로 처리한다.
+  } else if (paid === 'mine') {
     lines.push('- 이 글은 "내돈내산"(직접 구매·이용) 후기다 — 솔직하고 자연스럽게, 좋은 점과 아쉬운 점을 균형 있게.');
   } else if (paid === 'sponsored') {
     lines.push('- 이 글은 "협찬·소개"를 받은 글이다 — 협찬/소개 사실을 자연스럽게 밝히고, 효능·효과를 과장하지 않는다.');
   }
   // ★★안 써본/안 가본 것 = "직접 경험한 척" 절대 금지 → 남들의 후기·반응을 전하는 톤. (제품·차·기기·장소 등, 내돈내산·경험 메모가 없을 때)
-  if (paid !== 'mine' && !(memo || '').trim()) {
+  if (connect) {
+    if (!generationBrief.evidence.experienceInput) {
+      lines.push('- ★★[제휴 상품 정보·비교형] 이 글에는 작성자의 직접 이용 경험이 없다. "다녀와 보니/이용해 보니" 같은 1인칭 이용담과 "후기에서는 ~라더라" 같은 남의 후기 전달을 쓰지 말고, 등록 상품 근거와 확인 질문으로 정보·비교형 원고를 쓴다.');
+    }
+  } else if (paid !== 'mine' && !(memo || '').trim()) {
     lines.push('- ★★직접 사보거나 가보거나 써본 게 아니면(위에 내돈내산·경험 메모가 없으면) "제가 직접 써보니/가보니 좋더라" 같은 1인칭 경험 단정은 절대 쓰지 마라(거짓 후기=신뢰 붕괴·저품질). 제품·차·카메라·기기·장소처럼 "실물 경험"이 필요한 주제는, 스펙·정보·"왜 지금 화제인지"는 정확히 전하되 "평가·사용감"은 반드시 남의 후기를 전하는 톤으로: "커뮤니티에서는 ~라는 얘기가 많더라고요", "실사용 구매평을 보면 ~라고 하더라고요", "리뷰들을 종합해보면 ~" 식으로. (페르소나가 있으면 "저도 알아봤는데, 커뮤니티에서는 ~라더라고요"처럼 그 시점 + 후기 인용을 결합)');
   }
   // ★★★상품 리뷰(검색용) — 실제 제품 후기로 채우고, 확인 안 된 스펙·순위·개인사연은 지어내지 마라. (일반 성분 상식은 적극 활용 OK)
@@ -495,6 +518,22 @@ function buildSearchUserPrompt({ topicKey, keyword, extra, retry, autocomplete, 
   }
   if (extra) lines.push(`추가 요청: ${extra}`);
   if (topicContext && topicContext.promptBlock) lines.push(topicContext.promptBlock);
+  if (connect) {
+    lines.push('');
+    lines.push(String(connectContext.promptBlock || ''));
+    if (connect.sources.length) {
+      lines.push('');
+      lines.push('[등록 상품 근거 — 출처 유형별로 검토된 발췌. 상세 페이지 전체 본문이 아니다]');
+      connect.sources.forEach((item) => {
+        lines.push(`◆ ${connectSourceLabel(item)} (${item.url}) [출처 ${item.sourceId} / 상품 ${item.productIds.join(', ')}]: ${String(item.text).slice(0, 1200)}`);
+      });
+    }
+    lines.push('');
+    lines.push('[제휴 상품 원고 규칙]');
+    lines.push('- 상품의 가격·출발일·포함/불포함·취소/환불·변경 조건은 위 "검토된 사실"과 등록 상품 근거에 적힌 것만 쓴다. 뉴스·후기·검색 발췌·자동완성으로 이런 조건을 채우거나 바꾸지 않는다.');
+    lines.push('- "확인되지 않은 항목"은 단정하지 말고 "예약 페이지에서 확인 필요"로 안내한다. 가격은 확인한 옵션 조건(출발일·인원·객실)과 함께 쓰고, 예약 시점에 달라질 수 있음을 알린다.');
+    lines.push('- 상품 판매처의 상세 페이지를 공식 기관 자료처럼 표현하지 않는다.');
+  }
 
   if (retry) {
     lines.push('');

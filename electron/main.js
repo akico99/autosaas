@@ -57,6 +57,9 @@ const { captureTopicSite, createTopicCaptureSession: createElectronTopicCaptureS
 const topicDrafts = require('../src/topics/drafts');
 const { parseDraftText, postToDraftText, ensureImageSlots } = require('../src/topics/draftText');
 const { buildKeywordStrategy, homefeedGuidance } = require('../src/topics/keywordStrategy');
+const { readConnectCatalog, writeConnectCatalog, buildConnectContext } = require('../src/connect/products');
+const { checkConnectPost } = require('../src/connect/check');
+const { createConnectService, buildTravelImportRequest, dispatchConnectIpc } = require('../src/connect/service');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -1264,16 +1267,24 @@ app.whenReady().then(async () => {
     if (!TOPICS[topicId] || !TOPICS[topicId].enabled) return { ok: false, error: '비활성 주제입니다.', profiles: [] };
     const file = path.join(topicUserData(), 'topic-profiles.json');
     const data = readTopicProfiles(file);
-    const profiles = data.profiles.filter((profile) => profile.topicId === topicId);
-    if (!profiles.length && topicId === 'saju') profiles.push(...DEFAULT_PROFILES.map((profile) => ({ ...profile })));
-    if (!fs.existsSync(file)) writeTopicProfiles(file, { profiles });
+    const allProfiles = data.profiles.slice();
+    let profiles = allProfiles.filter((profile) => profile.topicId === topicId);
+    if (!profiles.length && topicId === 'saju') profiles = DEFAULT_PROFILES.map((profile) => ({ ...profile }));
+    if (!profiles.length && topicId === 'travel-connect') profiles = [{ key: 'travel-connect-a', topicId, name: '여행 상품 정보', blogId: '', persona: '여행 상품 조건을 근거와 함께 정리하는 운영자', focus: '여행 상품 비교와 예약 전 확인', toneHint: '차분하고 구체적인 정보형', frameColor: '#dce8f2', createdAt: new Date().toISOString() }];
+    if (!fs.existsSync(file) || (topicId === 'travel-connect' && !allProfiles.some((profile) => profile.topicId === topicId))) {
+      writeTopicProfiles(file, { profiles: [...allProfiles.filter((profile) => profile.topicId !== topicId), ...profiles] });
+    }
     return { ok: true, profiles };
   });
   ipcMain.handle('topicProfiles:save', async (_e, profiles) => {
     try {
-      if (!Array.isArray(profiles) || profiles.some((profile) => !profile || profile.topicId !== 'saju' || !/^[a-z0-9-]{2,40}$/i.test(String(profile.key || '')))) throw new Error('프로필 입력이 올바르지 않습니다.');
+      const allowedGroups = new Set(['saju', 'travel-connect']);
+      const groups = new Set((Array.isArray(profiles) ? profiles : []).map((profile) => profile && profile.topicId));
+      if (!Array.isArray(profiles) || groups.size > 1 || [...groups].some((group) => !allowedGroups.has(group))
+        || profiles.some((profile) => !profile || !/^[a-z0-9-]{2,40}$/i.test(String(profile.key || '')))) throw new Error('프로필 입력이 올바르지 않습니다.');
+      const topicId = groups.size ? [...groups][0] : 'saju';
       const file = path.join(topicUserData(), 'topic-profiles.json');
-      const existing = readTopicProfiles(file).profiles.filter((profile) => profile.topicId !== 'saju');
+      const existing = readTopicProfiles(file).profiles.filter((profile) => profile.topicId !== topicId);
       return { ok: true, ...writeTopicProfiles(file, { profiles: [...existing, ...profiles] }) };
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -1343,8 +1354,9 @@ app.whenReady().then(async () => {
   // 사주 탭 원고 1편 생성(또는 불러온 원고 마무리) — 사주 규칙 검사·사진 배정·기록까지 한 번에.
   //   importedPost가 있으면 Claude를 부르지 않고 그 원고를 그대로 쓴다.
   //   skipLogs면 키워드 기록·성과 항목을 다시 남기지 않는다(보관함 원고 수정용).
-  async function runTopicGeneration(request = {}, { importedPost = null, skipLogs = false } = {}) {
+  async function runTopicGeneration(request = {}, { importedPost = null, skipLogs = false, savedConnectContext = null } = {}) {
     try {
+      if (request.topicId === 'travel-connect') return runTravelConnectGeneration(request, { importedPost, skipLogs, savedConnectContext });
       const { topicId = 'saju', profileKey, keyword: rawKeyword, purpose = 'search', productKey, opts = {} } = request;
       const topic = TOPICS[topicId];
       if (!topic || !topic.enabled) throw new Error('현재 사용할 수 없는 주제입니다.');
@@ -1432,8 +1444,6 @@ app.whenReady().then(async () => {
       return { ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })), status, holdReasons, reviewReasons, brief: generated.brief || { intentLabel: purpose === 'home' ? '홈판용' : '검색 의도 미분류' }, contentCheck: generated.contentCheck || null, validation: generated.validation || null, factCheck: generated.factCheck || null, scrapeHealth: generated.scrapeHealth || null, meta: generated.meta || null, topic: { profileKey: profile.key, productKey: chosenProductKey, ctaUrl: context.ctaUrl, conflict: conflict || null, strategy: strategy ? { source: strategy.source, blogSlot: strategy.blogSlot, dominantFormat: strategy.dominantFormat, warnings: strategy.warnings, topTitles: strategy.topTitles || [] } : null } };
     } catch (error) { return { ok: false, error: error.message }; }
   }
-  ipcMain.handle('generate:topic', async (_e, request = {}) => runTopicGeneration(request));
-
   // ★원고 보관함 — 미리 생성(여러 키워드 순서대로) · 직접 쓴 원고 불러오기 · 수정 · 에디터 넣기 표시.
   const topicDraftsFile = () => path.join(topicUserData(), 'topic-drafts.json');
   const readDraftStore = () => topicDrafts.normalizeStore(readJsonFile(topicDraftsFile(), topicDrafts.emptyStore()));
@@ -1455,16 +1465,222 @@ app.whenReady().then(async () => {
     writeDraftStore(store);
     return draft;
   };
+
+  const isTrustedConnectSender = (event) => {
+    try {
+      if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
+      if (!event.senderFrame || !event.senderFrame.isMainFrame) return false;
+      const url = new URL(event.senderFrame.url);
+      return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Number(url.port) === APP_PORT && url.pathname === '/app/app.html';
+    } catch (_) { return false; }
+  };
+  const connectCatalogFile = () => path.join(topicUserData(), 'connect', 'catalog.json');
+  const readTravelCatalog = () => readConnectCatalog(connectCatalogFile());
+  const connectService = createConnectService({
+    catalogFile: connectCatalogFile(),
+    readCatalog: readConnectCatalog,
+    writeCatalog: writeConnectCatalog,
+    selectWorkbook: async () => {
+      const picked = await dialog.showOpenDialog(mainWindow, { title: '네이버 검색광고 키워드 XLSX 선택', defaultPath: app.getPath('downloads'), properties: ['openFile'], filters: [{ name: 'Excel 통합 문서', extensions: ['xlsx'] }] });
+      return picked.canceled || !picked.filePaths[0] ? { canceled: true } : { canceled: false, filePath: picked.filePaths[0] };
+    },
+    readWorkbook: async (file) => {
+      if (path.extname(file).toLowerCase() !== '.xlsx') throw new Error('.xlsx 파일만 가져올 수 있습니다.');
+      const imported = await readSearchAdsWorkbook(file, { importedAt: new Date().toISOString() });
+      return { ...imported, sourceFileName: path.basename(imported.sourceFileName || file) };
+    },
+    autocomplete: (seed) => expandKeywords([seed], { rounds: 1, maxCandidates: 120, delayMs: 120 }),
+    observe: async ({ seed, adsRows, autocomplete, max = 20 }) => {
+      const seen = new Set();
+      const candidates = [seed, ...adsRows.map((row) => row.keyword), ...autocomplete].filter((keyword) => {
+        const key = String(keyword || '').replace(/\s+/g, '').toLocaleLowerCase('ko-KR');
+        if (!key || seen.has(key)) return false;
+        seen.add(key); return true;
+      }).slice(0, max);
+      const observations = [];
+      for (const keyword of candidates) {
+        try {
+          const found = await collectIntegratedSerp(keyword, { runGuardedSearch, scrapeRendered, searchUrl: M.searchUrl.integrated, userAgent: _DESKTOP_UA_OF, domains: [] });
+          observations.push({ keyword, ...found });
+        } catch (error) { observations.push({ keyword, measured: false, blocked: isSearchBlocked(), reason: error.message, blocks: [] }); }
+      }
+      return observations;
+    },
+    prepareDelivery: ({ id }) => {
+      try {
+        const store = readDraftStore();
+        const current = topicDrafts.listDrafts(store).find((draft) => draft.id === id && draft.topicId === 'travel-connect');
+        if (!current || !current.result || !current.result.connect) throw new Error('여행 원고를 찾지 못했습니다.');
+        const catalog = readTravelCatalog();
+        const ctx = current.result.connect;
+        const products = catalog.products.filter((product) => ctx.productIds.includes(product.id));
+        const checked = checkConnectPost(current.result.post, { connectContext: ctx, currentProducts: products, now: Date.now() });
+        const final = combineConnectCheck(current.status === 'review' ? 'review' : current.status, checked);
+        const status = final.status === 'ready' && current.status !== 'ready' ? current.status : final.status;
+        const updatedResult = { ...current.result, status, holdReasons: final.holdReasons, reviewReasons: final.reviewReasons };
+        const updated = topicDrafts.updateDraft(store, id, { status, holdReasons: final.holdReasons, reviewReasons: final.reviewReasons, result: updatedResult });
+        writeDraftStore(updated.store);
+        return { ok: status !== 'hold', draft: draftView(updated.draft), result: updatedResult, status, holdReasons: final.holdReasons, reviewReasons: final.reviewReasons };
+      } catch (error) { return { ok: false, error: error.message, status: 'hold', holdReasons: [error.message], reviewReasons: [] }; }
+    },
+  });
+  ipcMain.handle('connect:catalog', (event, input = {}) => dispatchConnectIpc('connect:catalog', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:saveProduct', (event, input = {}) => dispatchConnectIpc('connect:saveProduct', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:prepareKeywords', (event, input = {}) => dispatchConnectIpc('connect:prepareKeywords', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:prepareDelivery', (event, input = {}) => dispatchConnectIpc('connect:prepareDelivery', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+
+  ipcMain.handle('generate:topic', async (event, request = {}) => {
+    if (request && request.topicId === 'travel-connect') {
+      if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+      const allowed = ['topicId', 'profileKey', 'keyword', 'productIds', 'variantIds', 'experience', 'travelTopic'];
+      if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some((key) => !allowed.includes(key))
+        || typeof request.profileKey !== 'string' || !/^[a-z0-9-]{2,40}$/i.test(request.profileKey)
+        || typeof request.keyword !== 'string' || request.keyword.length > 160
+        || !Array.isArray(request.productIds) || !Array.isArray(request.variantIds)
+        || request.productIds.some((id) => typeof id !== 'string') || request.variantIds.some((id) => typeof id !== 'string')
+        || (request.experience !== undefined && (typeof request.experience !== 'string' || request.experience.length > 2000))
+        || (request.travelTopic !== undefined && !['domestictravel', 'worldtravel'].includes(request.travelTopic))) return { ok: false, error: '여행 원고 요청 형식이 올바르지 않습니다.' };
+      const result = await runTopicGeneration(request);
+      const draft = saveDraftFromResult(request, result, 'ai');
+      return { ...result, draft: draftView(draft), draftId: draft.id };
+    }
+    return runTopicGeneration(request);
+  });
+
+  const travelCostGate = (connectContext, catalog, now = Date.now()) => {
+    const holds = [];
+    const nowMs = now instanceof Date ? now.getTime() : now;
+    for (const snapshot of connectContext.productSnapshots) {
+      const current = catalog.products.find((product) => product.id === snapshot.id);
+      if (!current || current.connectKind !== 'travel') { holds.push('선택 상품이 등록된 여행 상품이 아닙니다.'); continue; }
+      if (current.eligibility !== 'verified') holds.push(`${current.name}: 예약 가능 여부를 근거로 확인해야 합니다.`);
+      if (current.affiliateStatus !== 'issued' || !current.affiliateUrlRaw) holds.push(`${current.name}: 발급된 제휴 링크를 등록해야 합니다.`);
+      if (!snapshot.variants.length) holds.push(`${current.name}: 글에 사용할 옵션을 선택해 주세요.`);
+      for (const variant of snapshot.variants) {
+        const priceFact = current.facts.find((fact) => fact.field === `variant:${variant.id}:price` && fact.status === 'verified' && fact.value === variant.amountMinor);
+        if (!priceFact || !priceFact.sourceId || !priceFact.excerpt) holds.push(`${current.name} ${variant.id}: 출처 발췌로 가격을 검토해야 합니다.`);
+        const checked = Date.parse(variant.priceCheckedAt);
+        if (!Number.isFinite(checked) || checked > nowMs || nowMs - checked >= 24 * 60 * 60 * 1000) holds.push(`${current.name} ${variant.id}: 최근 24시간 안의 가격 확인이 필요합니다.`);
+        if (!variant.departureDate) holds.push(`${current.name} ${variant.id}: 출발일을 등록해야 합니다.`);
+      }
+    }
+    return [...new Set(holds)];
+  };
+  const combineConnectCheck = (generatedStatus, check) => ({
+    status: check.status === 'hold' || generatedStatus === 'hold' ? 'hold'
+      : check.status === 'review' || generatedStatus === 'review' ? 'review' : 'ready',
+    holdReasons: [...new Set([...(check.holdReasons || []), ...(generatedStatus === 'hold' ? ['생성 또는 근거 검수가 보류되었습니다.'] : [])])],
+    reviewReasons: [...new Set([...(check.reviewReasons || []), ...(generatedStatus === 'review' ? ['생성 결과에 추가 검토 항목이 있습니다.'] : [])])],
+  });
+
+  async function runTravelConnectGeneration(request, { importedPost = null, skipLogs = false, savedConnectContext = null } = {}) {
+    try {
+      const keyword = String(request.keyword || '').trim();
+      if (!keyword) throw new Error('키워드를 입력해 주세요.');
+      const profileData = readTopicProfiles(path.join(topicUserData(), 'topic-profiles.json'));
+      const profile = profileData.profiles.find((item) => item.key === request.profileKey && item.topicId === 'travel-connect');
+      if (!profile) throw new Error('여행 프로필을 선택해 주세요.');
+      const catalog = readTravelCatalog();
+      let connectContext = savedConnectContext;
+      let preflightHolds = [];
+      if (!connectContext) {
+        const ids = Array.isArray(request.productIds) ? [...new Set(request.productIds)] : [];
+        const selected = catalog.products.filter((product) => ids.includes(product.id));
+        if (!ids.length || selected.length !== ids.length || selected.some((product) => product.connectKind !== 'travel')) throw new Error('등록된 여행 상품만 선택할 수 있습니다.');
+        connectContext = buildConnectContext({ products: selected, variantIds: request.variantIds, sources: catalog.sources, experience: request.experience || '' });
+        preflightHolds = travelCostGate(connectContext, catalog);
+        // Imported text never reaches the model. Keep the authored post and its product snapshot
+        // so the normal checker can save a held draft even before registration is complete.
+        if (preflightHolds.length && !importedPost) return { ok: true, post: null, status: 'hold', holdReasons: preflightHolds, reviewReasons: [], connect: connectContext, topic: { profileKey: profile.key } };
+      }
+      if (connectContext.connectKind !== 'travel' || !Array.isArray(connectContext.productIds) || !Array.isArray(connectContext.variantIds)) throw new Error('저장된 여행 상품 맥락이 올바르지 않습니다.');
+      const currentProducts = catalog.products.filter((product) => connectContext.productIds.includes(product.id));
+      const assetsData = topicAssetList('travel-connect');
+      let generated;
+      let selectedTravelTopic = request.travelTopic || null;
+      if (importedPost) {
+        generated = { post: importedPost, status: 'review', holdReasons: [], reviewReasons: ['직접 작성하거나 수정한 원고라 모델 근거 대조를 하지 않았습니다.'], brief: { intentLabel: '직접 작성 원고' } };
+      } else {
+        const conflict = findKeywordConflict(readJsonFile(path.join(topicUserData(), 'topic-keyword-log.json'), []), { topicId: 'travel-connect', blogKey: profile.key, keyword });
+        if (conflict && conflict.kind === 'different-blog' && request.opts && request.opts.auto) return { ok: true, skipped: true, status: 'hold', holdReasons: ['다른 블로그에서 최근 사용한 키워드라 자동 생성을 건너뛰었습니다.'], reviewReasons: [] };
+        const destination = (connectContext.productSnapshots[0] && connectContext.productSnapshots[0].travelDetails.destination) || '';
+        if (!destination) return { ok: true, post: null, status: 'hold', holdReasons: ['여행 상품의 목적지를 등록해 주세요.'], reviewReasons: [], connect: connectContext };
+        const isDomestic = /국내|한국|대한민국|서울|부산|대구|인천|광주|대전|울산|세종|제주|강원|강릉|춘천|속초|평창|경기|수원|성남|용인|고양|충청|충북|충남|청주|천안|전라|전북|전남|전주|여수|목포|경상|경북|경남|포항|경주|창원|김해/.test(destination);
+        selectedTravelTopic = selectedTravelTopic || (isDomestic ? 'domestictravel' : 'worldtravel');
+        if (!['domestictravel', 'worldtravel'].includes(selectedTravelTopic)) throw new Error('여행 유형은 국내 또는 해외 중에서 선택해 주세요.');
+        generated = await generateSearchPost({
+          topic: selectedTravelTopic, keyword,
+          persona: profile.persona, style: profile.toneHint, connectContext,
+        });
+      }
+      if (!generated || !generated.post) return { ok: true, post: null, status: generated && generated.status || 'hold', holdReasons: generated && generated.holdReasons || ['원고를 만들지 못했습니다.'], reviewReasons: generated && generated.reviewReasons || [], connect: connectContext };
+      const post = generated.post;
+      post.blocks = Array.isArray(post.blocks) ? post.blocks : [];
+      if (!importedPost) {
+        const flattened = [post.title, post.description, ...post.blocks.map((block) => block && (block.text || block.answer || block.href) || '')].join('\n');
+        if (!flattened.includes(connectContext.disclosureLine)) post.blocks.unshift({ kind: 'text', text: connectContext.disclosureLine });
+        const present = connectContext.links.every((link) => post.blocks.some((block) => block && block.kind === 'link' && block.href === link.affiliateUrlRaw));
+        if (!present) for (const link of connectContext.links) post.blocks.push({ kind: 'link', text: `상품 상세 확인: ${link.productId}`, href: link.affiliateUrlRaw });
+      }
+      if (importedPost) post.blocks = ensureImageSlots(post, { maxImages: 6 }).blocks;
+      const usageFile = path.join(topicUserData(), 'topic-asset-usage.json');
+      const usage = readJsonFile(usageFile, []);
+      const mapped = resolveTopicImageAssets(post, assetsData.items, { productKey: 'travel-connect', keyword, blogKey: profile.key, usage, maxImages: 6 });
+      const framedDir = path.join(topicDataRoot('travel-connect'), 'framed', profile.key);
+      fs.mkdirSync(framedDir, { recursive: true });
+      const framedPaths = [];
+      for (const asset of mapped.assets) {
+        const bytes = fs.readFileSync(asset.path);
+        const digest = require('crypto').createHash('sha1').update(bytes).digest('hex');
+        const framed = path.join(framedDir, `${digest}-dce8f2.png`);
+        if (!fs.existsSync(framed)) {
+          const ext = path.extname(asset.path).toLowerCase();
+          const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+          const html = `<!doctype html><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;width:1080px;height:1080px;background:#dce8f2;overflow:hidden}body{padding:24px}img{width:100%;height:100%;object-fit:contain;border-radius:24px;background:#fff}</style><img src="data:${mime};base64,${bytes.toString('base64')}">`;
+          await renderHtmlToPngWin(html, framed, 1080, []);
+        }
+        framedPaths.push(framed);
+        usage.push({ assetId: asset.id, blogKey: profile.key, at: new Date().toISOString() });
+      }
+      mapped.assetPaths = framedPaths;
+      const checkedResult = checkConnectPost(mapped.post, { connectContext, currentProducts, now: Date.now() });
+      const checked = importedPost && preflightHolds.length ? {
+        ...checkedResult,
+        status: 'hold',
+        holdReasons: [...new Set([...(checkedResult.holdReasons || []), ...preflightHolds])],
+      } : checkedResult;
+      const final = combineConnectCheck(generated.status || 'ready', checked);
+      fs.writeFileSync(usageFile + '.tmp', JSON.stringify(usage, null, 2), 'utf8');
+      fs.renameSync(usageFile + '.tmp', usageFile);
+      if (!skipLogs && !importedPost) appendKeywordLog(path.join(topicUserData(), 'topic-keyword-log.json'), { topicId: 'travel-connect', blogKey: profile.key, keyword, at: new Date().toISOString() });
+      return {
+        ok: true, post: mapped.post, assets: mapped.assets.map((asset, index) => ({ ...asset, path: mapped.assetPaths[index] })),
+        ...final, connect: connectContext,
+        brief: generated.brief || { intentLabel: '검색 의도 미분류' }, contentCheck: generated.contentCheck || null,
+        validation: generated.validation || null, factCheck: generated.factCheck || null,
+        topic: { profileKey: profile.key, travelTopic: selectedTravelTopic, destination: connectContext.productSnapshots.map((p) => p.travelDetails.destination), conflict: null },
+      };
+    } catch (error) { return { ok: false, error: error.message }; }
+  }
   let topicDraftBatch = null;
   ipcMain.handle('topicDrafts:list', async (_e, topicId = 'saju') => {
+    if (topicId === 'travel-connect' && !isTrustedConnectSender(_e)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.', drafts: [] };
     try { return { ok: true, drafts: topicDrafts.listDrafts(readDraftStore(), topicId).map(draftView), running: !!topicDraftBatch }; }
     catch (error) { return { ok: false, error: error.message, drafts: [] }; }
   });
   ipcMain.handle('topicDrafts:generate', async (event, request = {}) => {
     if (topicDraftBatch) return { ok: false, error: '이미 미리 생성이 진행 중입니다.' };
+    if (request.topicId === 'travel-connect') {
+      const allowed = ['topicId', 'profileKey', 'keywords', 'productIds', 'variantIds', 'experience', 'travelTopic'];
+      if (!isTrustedConnectSender(event) || Object.keys(request).some((key) => !allowed.includes(key))
+        || !Array.isArray(request.productIds) || !Array.isArray(request.variantIds)
+        || request.productIds.some((id) => typeof id !== 'string') || request.variantIds.some((id) => typeof id !== 'string')
+        || (request.experience !== undefined && (typeof request.experience !== 'string' || request.experience.length > 2000))
+        || (request.travelTopic !== undefined && !['domestictravel', 'worldtravel'].includes(request.travelTopic))) return { ok: false, error: '여행 원고 요청 형식이 올바르지 않습니다.' };
+    }
     const { keywords, dropped } = topicDrafts.parseKeywordList(Array.isArray(request.keywords) ? request.keywords.join('\n') : request.keywords, { max: 10 });
     if (!keywords.length) return { ok: false, error: '키워드를 하나 이상 입력해 주세요.' };
-    topicDraftBatch = { cancelled: false };
+    topicDraftBatch = { cancelled: false, topicId: request.topicId || 'saju' };
     const batch = topicDraftBatch;
     const send = (payload) => { try { if (!event.sender.isDestroyed()) event.sender.send('topicDrafts:progress', payload); } catch (_) {} };
     const summary = { made: 0, held: 0, skipped: 0, failed: 0, stopped: null, dropped };
@@ -1473,7 +1689,7 @@ app.whenReady().then(async () => {
         if (batch.cancelled) { summary.stopped = 'cancelled'; break; }
         const keyword = keywords[index];
         send({ index, total: keywords.length, keyword, phase: 'start' });
-        const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword, purpose: request.purpose, productKey: request.productKey || '', opts: { auto: true } };
+        const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword, purpose: request.purpose, productKey: request.productKey || '', ...(request.topicId === 'travel-connect' ? { productIds: request.productIds, variantIds: request.variantIds, experience: request.experience, travelTopic: request.travelTopic } : {}), opts: { auto: true } };
         const result = await runTopicGeneration(single);
         if (result.skipped) { summary.skipped += 1; send({ index, total: keywords.length, keyword, phase: 'skipped', reasons: result.holdReasons || [] }); continue; }
         const draft = saveDraftFromResult(single, result, 'ai');
@@ -1486,13 +1702,26 @@ app.whenReady().then(async () => {
     send({ phase: 'finished', summary });
     return { ok: true, summary };
   });
-  ipcMain.handle('topicDrafts:cancel', async () => { if (topicDraftBatch) topicDraftBatch.cancelled = true; return { ok: true }; });
+  ipcMain.handle('topicDrafts:cancel', async (_e) => {
+    if (topicDraftBatch && topicDraftBatch.topicId === 'travel-connect' && !isTrustedConnectSender(_e)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    if (topicDraftBatch) topicDraftBatch.cancelled = true;
+    return { ok: true };
+  });
   ipcMain.handle('topicDrafts:import', async (_e, request = {}) => {
     try {
+      if (request.topicId === 'travel-connect') {
+        const allowed = ['topicId', 'profileKey', 'keyword', 'productIds', 'variantIds', 'experience', 'text', 'travelTopic'];
+        if (!isTrustedConnectSender(_e) || Object.keys(request).some((key) => !allowed.includes(key))
+          || !Array.isArray(request.productIds) || !Array.isArray(request.variantIds)
+          || (request.experience !== undefined && (typeof request.experience !== 'string' || request.experience.length > 2000))
+          || (request.travelTopic !== undefined && !['domestictravel', 'worldtravel'].includes(request.travelTopic))) throw new Error('여행 원고 요청 형식이 올바르지 않습니다.');
+      }
       const assets = topicAssetList(request.topicId || 'saju').items || [];
       const parsed = parseDraftText(request.text, { knownAssetIds: assets.map((asset) => asset.id) });
       if (parsed.warnings.length) return { ok: false, error: parsed.warnings.join(' ') };
-      const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword: request.keyword, purpose: request.purpose, productKey: request.productKey || '', opts: { confirmed: true } };
+      const single = request.topicId === 'travel-connect'
+        ? { ...buildTravelImportRequest(request), opts: { confirmed: true } }
+        : { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword: request.keyword, purpose: request.purpose, productKey: request.productKey || '', opts: { confirmed: true } };
       const result = await runTopicGeneration(single, { importedPost: parsed.post });
       if (!result.ok) return result;
       return { ok: true, draft: draftView(saveDraftFromResult(single, result, 'import')) };
@@ -1500,13 +1729,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('topicDrafts:update', async (_e, { id, text } = {}) => {
     try {
+      if (!_e || !_e.sender) throw new Error('원고 수정 요청 형식이 올바르지 않습니다.');
       const current = topicDrafts.listDrafts(readDraftStore()).find((draft) => draft.id === id);
       if (!current) throw new Error('원고를 찾지 못했습니다.');
+      if (current.topicId === 'travel-connect' && !isTrustedConnectSender(_e)) throw new Error('허용되지 않은 IPC 발신자입니다.');
       const assets = topicAssetList(current.topicId).items || [];
       const parsed = parseDraftText(text, { knownAssetIds: assets.map((asset) => asset.id) });
       if (parsed.warnings.length) return { ok: false, error: parsed.warnings.join(' ') };
-      const single = { topicId: current.topicId, profileKey: current.profileKey, keyword: current.keyword, purpose: current.purpose, productKey: current.productKey, opts: { confirmed: true } };
-      const result = await runTopicGeneration(single, { importedPost: parsed.post, skipLogs: true });
+      const single = { topicId: current.topicId, profileKey: current.profileKey, keyword: current.keyword, purpose: current.purpose, productKey: current.productKey, ...(current.topicId === 'travel-connect' ? { travelTopic: current.result && current.result.topic && current.result.topic.travelTopic } : {}), opts: { confirmed: true } };
+      const result = await runTopicGeneration(single, { importedPost: parsed.post, skipLogs: true, ...(current.topicId === 'travel-connect' ? { savedConnectContext: current.result && current.result.connect } : {}) });
       if (!result.ok) return result;
       if (current.source === 'ai') result.reviewReasons = ['수정한 원고라 근거 대조를 다시 하지 않았습니다.'].concat((result.reviewReasons || []).filter((reason) => !/직접 작성한 원고/.test(reason)));
       const { store, draft } = topicDrafts.updateDraft(readDraftStore(), id, { status: result.status, holdReasons: result.holdReasons || [], reviewReasons: result.reviewReasons || [], result });
@@ -1515,11 +1746,21 @@ app.whenReady().then(async () => {
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('topicDrafts:delete', async (_e, { id } = {}) => {
-    try { writeDraftStore(topicDrafts.removeDraft(readDraftStore(), id)); return { ok: true }; }
+    try {
+      const store = readDraftStore();
+      const current = topicDrafts.listDrafts(store).find((draft) => draft.id === id);
+      if (current && current.topicId === 'travel-connect' && !isTrustedConnectSender(_e)) throw new Error('허용되지 않은 IPC 발신자입니다.');
+      writeDraftStore(topicDrafts.removeDraft(store, id)); return { ok: true };
+    }
     catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('topicDrafts:markInjected', async (_e, { id } = {}) => {
-    try { const { store } = topicDrafts.updateDraft(readDraftStore(), id, { injectedAt: new Date().toISOString() }); writeDraftStore(store); return { ok: true }; }
+    try {
+      const existing = readDraftStore();
+      const current = topicDrafts.listDrafts(existing).find((draft) => draft.id === id);
+      if (current && current.topicId === 'travel-connect' && !isTrustedConnectSender(_e)) throw new Error('허용되지 않은 IPC 발신자입니다.');
+      const { store } = topicDrafts.updateDraft(existing, id, { injectedAt: new Date().toISOString() }); writeDraftStore(store); return { ok: true };
+    }
     catch (error) { return { ok: false, error: error.message }; }
   });
 

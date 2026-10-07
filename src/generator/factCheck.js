@@ -15,7 +15,7 @@
 //     최종 판단은 사람이 한다. 그래서 결과는 경고이지 차단이 아니다.
 
 const { runClaude } = require('./runClaude');
-const { isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText, collectOriginalSources } = require('./searchBrief');
+const { isValidHttpUrl, isValidUserSource, isInstitutionPage, isArticleBody, meaningfulText, collectOriginalSources, isConnectSourceType, isConnectProductSource, connectSourceLabel } = require('./searchBrief');
 
 const SYSTEM = [
   '너는 블로그 원고의 사실 검증기다. 원고와 확인된 원문을 받아, 원고 안의 검증 가능한 주장이 원문에 있는지 대조한다.',
@@ -47,11 +47,23 @@ const SYSTEM = [
   '- supported 는 목록에 넣지 않는다(문제만 보고). 검사할 주장이 없거나 전부 근거에 있으면 {"claims":[]}.',
 ].join('\n');
 
-/** 블록 배열 → 검사용 본문 텍스트. */
-function blocksToText(blocks) {
+/** 블록 배열 → 검사용 본문 텍스트. structured면 표와 Q&A 문장도 포함한다(제휴 상품 글). */
+function structuredBlockText(b) {
+  if (b.kind === 'table') {
+    return [b.columns || [], ...(b.rows || [])]
+      .map((row) => (Array.isArray(row) ? row : []).map((cell) => String(cell == null ? '' : cell).trim()).join(' | '))
+      .filter((row) => row.replace(/[|\s]/g, '')).join('\n');
+  }
+  if (b.kind === 'qna') {
+    return [b.question && '질문: ' + String(b.question).trim(), b.answer && '답변: ' + String(b.answer).trim()].filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+function blocksToText(blocks, { structured = false } = {}) {
   return (blocks || [])
-    .filter((b) => b && (b.kind === 'text' || b.kind === 'heading' || b.kind === 'quote'))
-    .map((b) => String(b.text || '').trim())
+    .filter((b) => b && (b.kind === 'text' || b.kind === 'heading' || b.kind === 'quote' || (structured && (b.kind === 'table' || b.kind === 'qna'))))
+    .map((b) => (b.kind === 'table' || b.kind === 'qna') ? structuredBlockText(b) : String(b.text || '').trim())
     .filter(Boolean)
     .join('\n');
 }
@@ -77,6 +89,8 @@ function parseLoose(text) {
  * @returns {Promise<{ran:boolean, issues:Array, highCount:number, reason?:string}>}
  */
 function isOriginalFactSource(source) {
+  // 제휴 상품 출처는 검토된 짧은 발췌일 수 있어 전용 검사기로만 판정한다.
+  if (source && typeof source === 'object' && isConnectSourceType(source.sourceType)) return isConnectProductSource(source);
   if (!source || typeof source !== 'object' || !isValidHttpUrl(source.url)
     || !meaningfulText(source.text || source.body)) return false;
   const sourceType = String(source.sourceType || '').toLowerCase();
@@ -86,8 +100,8 @@ function isOriginalFactSource(source) {
   return false;
 }
 
-async function factCheckPost({ post, facts, articles, background, placeReviews, officialFacts, originalSources, run, model = 'claude-haiku-4-5-20251001' } = {}) {
-  const body = blocksToText(post && post.blocks);
+async function factCheckPost({ post, facts, articles, background, placeReviews, officialFacts, originalSources, includeStructured = false, run, model = 'claude-haiku-4-5-20251001' } = {}) {
+  const body = blocksToText(post && post.blocks, { structured: includeStructured === true });
   if (!body || body.length < 200) return { ran: false, issues: [], highCount: 0, reason: '본문이 짧아 생략' };
 
   const ev = [];
@@ -107,10 +121,12 @@ async function factCheckPost({ post, facts, articles, background, placeReviews, 
   const originals = [...declaredOriginals, ...derivedOriginals]
     .filter(isOriginalFactSource)
     .filter((source, index, all) => all.findIndex((candidate) => candidate.sourceType === source.sourceType && candidate.url === source.url) === index);
+  const hasConnectSources = originals.some((source) => isConnectSourceType(source.sourceType));
   if (originals.length) {
     ev.push('[확인된 원문 — 아래 URL과 실제 본문만 확인 근거로 사용]');
     originals.slice(0, 8).forEach((source) => {
-      const label = source.sourceType === 'institution-page' ? '기관 원문'
+      const label = isConnectSourceType(source.sourceType) ? connectSourceLabel(source)
+        : source.sourceType === 'institution-page' ? '기관 원문'
         : source.sourceType === 'user-source' ? '사용자 제공 원문' : '기사 원문';
       ev.push(`◆ ${label}${source.title ? '(' + String(source.title).slice(0, 80) + ')' : ''} (${source.url}): ${String(source.text || source.body || '').slice(0, 1800)}`);
     });
@@ -140,6 +156,9 @@ async function factCheckPost({ post, facts, articles, background, placeReviews, 
   const user = [
     '[근거 자료 — 확인된 원문과 탐색용 발췌를 구분해서 검토한다]',
     '원문 본문에 있는 사실만 supported로 판정한다. 요약·제목·발췌·후기만 뒷받침하는 주장은 supported로 판정하지 않는다.',
+    ...(hasConnectSources
+      ? ['상품의 가격·출발일·포함/불포함·취소/환불·변경 조건은 등록 상품 근거로만 supported로 판정한다. 기사·검색 발췌·후기가 같은 내용을 말해도 상품 조건의 근거가 아니다.']
+      : []),
     ev.join('\n'),
     officialFacts && String(officialFacts.brief || '').trim()
       ? `\n[탐색용 검색 요약 — 원문 아님]\n${String(officialFacts.brief).slice(0, 1000)}`

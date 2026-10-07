@@ -51,6 +51,50 @@ test('텍스트로 바꿨다가 다시 읽어도 같은 원고가 된다', () =>
   assert.deepEqual(second, first);
 });
 
+test('여행 링크 블록은 편집 텍스트를 거쳐도 원문 URL 바이트를 보존한다', () => {
+  const raw = 'https://naver.me/A%2Fb?x=1&x=2&utm_source=keep+raw#part';
+  const post = { title: '여행', description: '비교', thumbnailText: '여행', hashtags: [], blocks: [
+    { kind: 'text', text: '상품 조건을 확인해 보세요.' },
+    { kind: 'link', text: '다낭 예약 페이지', href: raw },
+  ] };
+  const text = postToDraftText(post);
+  const parsed = parseDraftText(text).post;
+  assert.deepEqual(parsed.blocks.find((block) => block.kind === 'link'), { kind: 'link', text: '다낭 예약 페이지', href: raw });
+});
+
+test('링크가 없는 기존 원고의 저장 텍스트 형식은 그대로 유지한다', () => {
+  const post = parseDraftText(SAMPLE, { knownAssetIds: ['compat-1'] }).post;
+  assert.equal(postToDraftText(post), [
+    '제목: 인터넷사주, 처음 볼 때 확인할 3가지',
+    '요약: 만세력 계산과 결과 형태를 먼저 보세요.',
+    '썸네일: 인터넷사주, 처음 볼 때 확인할 3가지',
+    '',
+    '인터넷사주를 고를 때 많이들 헷갈립니다. 두 줄로 쓴 문단입니다.',
+    '',
+    '## 만세력 계산이 맞는지',
+    '',
+    '[사진: compat-1]',
+    '',
+    '본문 문단입니다.',
+    '',
+    '> 사주는 참고 자료입니다.',
+    '',
+    '| 기준 | 설명 |',
+    '|---|---|',
+    '| 상담사 | 없음 |',
+    '',
+    'Q. 무료로 볼 수 있나요?',
+    'A. 오늘의 운세는 무료입니다.',
+    '',
+    '---',
+    '',
+    '[사진: 리포트 화면]',
+    '',
+    '태그: #사주 #인터넷사주',
+    '',
+  ].join('\n'));
+});
+
 test('제목 표시가 없으면 첫 줄을 제목으로 쓰고, 본문이 없으면 경고한다', () => {
   const titled = parseDraftText('사주궁합 보는 기준\n\n첫 문단입니다.');
   assert.equal(titled.post.title, '사주궁합 보는 기준');

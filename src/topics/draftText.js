@@ -58,6 +58,17 @@ function parseDraftText(input, { knownAssetIds = [] } = {}) {
       else post.hashtags = value.split(/[\s,]+/).map((tag) => tag.replace(/^#/, '').trim()).filter(Boolean);
       continue;
     }
+    const link = line.match(/^\[링크(?::([^\]]*))?\]\s+(https?:\/\/\S+)$/i);
+    if (link) {
+      flush();
+      let text = '';
+      if (link[1]) {
+        try { text = decodeURIComponent(link[1]); }
+        catch (_) { warnings.push(`링크 ${index + 1}행의 표시 이름 인코딩이 올바르지 않습니다.`); }
+      }
+      post.blocks.push({ kind: 'link', ...(text ? { text } : {}), href: link[2] });
+      continue;
+    }
     if (/^#\s+/.test(line) && !post.title) { flush(); post.title = line.replace(/^#\s+/, '').trim(); continue; }
     if (/^#{2,}\s+/.test(line)) { flush(); flushQuestion(); post.blocks.push({ kind: 'heading', text: line.replace(/^#{2,}\s+/, '').trim() }); continue; }
     if (/^>\s*/.test(line)) { flush(); post.blocks.push({ kind: 'quote', text: line.replace(/^>\s*/, '').trim() }); continue; }
@@ -135,6 +146,10 @@ function postToDraftText(post) {
     else if (block.kind === 'image') out.push(block.assetId ? '[사진: ' + block.assetId + ']' : (block.imageHint ? '[사진: ' + block.imageHint + ']' : '[사진]'), '');
     else if (block.kind === 'hr') out.push('---', '');
     else if (block.kind === 'qna') out.push('Q. ' + (block.question || ''), 'A. ' + (block.answer || ''), '');
+    else if (block.kind === 'link' && /^https?:\/\//i.test(String(block.href || '')) && !/\s/.test(String(block.href || ''))) {
+      const label = String(block.text || '');
+      out.push(`[링크${label ? ':' + encodeURIComponent(label) : ''}] ${block.href}`, '');
+    }
     else if (block.kind === 'table') {
       const columns = Array.isArray(block.columns) ? block.columns : [];
       if (columns.length) {

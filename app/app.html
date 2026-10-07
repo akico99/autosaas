@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>블로그 자동화</title>
+<link rel="stylesheet" href="travel-connect.css">
 <style>
   :root{
     --blue:#2b6ef2; --blue-d:#1f52c0; --blue-l:#eaf1ff;
@@ -294,6 +295,7 @@
       <div class="topic-nav" id="topic-nav">
         <button type="button" id="topic-saju-tab" class="on">사주보는 수달</button>
         <button type="button" id="topic-muju-tab" disabled title="준비 중">무주스키샵 (준비 중)</button>
+        <button type="button" id="topic-travel-tab" aria-controls="travel-connect-pane">여행 상품 정보</button>
         <button type="button" id="topic-legacy-tab">구버전 ▾</button>
       </div>
       <div class="topic-pane" id="topic-saju-pane">
@@ -871,6 +873,8 @@
 
 
 <script src="../src/topics/editorDelivery.js"></script>
+<script src="../src/connect/policy.js"></script>
+<script src="../src/topics/travelConnect.js"></script>
 <script src="../src/topics/publishPlan.js"></script>
 <script src="../src/topics/editorGuard.js"></script>
 <script>
@@ -879,6 +883,7 @@
   if (keywordToolOnly) document.body.classList.add('keyword-tool-only', 'keyword-tool-open');
   // ★현재 생성 컨텍스트(home/search) — 진행 안내를 "그 탭 하단"에 뜨게. (검색용 진행이 홈판에 뜨던 문제)
   window._genCtx = 'home';
+  window._topicId = 'saju';
   function _curSt(){ return window._topicStatusEl || byId(window._genCtx==='search'?'status-search':'status-home') || byId('status-home'); }
   // ★"오늘 만든 글 제목" 목록 — 홈판/검색용 각 탭 하단에 표시. 제목 자동입력이 실패한 글은 빨간 표시 → 사용자가 [복사]해서 직접 넣게.
   window._refreshTodayTitles = async function(){
@@ -910,6 +915,7 @@
   const all = (s) => Array.from(document.querySelectorAll(s));
 
   all('.tab').forEach((t) => t.addEventListener('click', () => {
+    if(window._travelConnectBusy) return;
     window._topicTabActive=false;
     all('.tab').forEach((x) => x.classList.remove('on'));
     all('.pane').forEach((x) => x.classList.remove('on'));
@@ -930,16 +936,20 @@
     var topicTab=byId('topic-saju-tab'), legacyTab=byId('topic-legacy-tab');
     var profileSelect=byId('topic-profile'), productSelect=byId('topic-product'), keywordInput=byId('topic-keyword');
     var status=byId('topic-status'), assets=[], topicConfig=null, profiles=[];
-    window._topicTabActive=true;
+      window._topicTabActive=true; window._topicId='saju';
     function showTopic(){
+      if(window._travelConnectBusy) return;
       if(legacy) legacy.style.display='none'; if(topicPane) topicPane.style.display='block';
       topicTab.classList.add('on'); legacyTab.classList.remove('on'); window._topicTabActive=true;
+      window._topicId='saju';
       window._genCtx='home'; window._topicStatusEl=null;
       try{ if(typeof window._refreshThumbSaved==='function') window._refreshThumbSaved(); }catch(e){}
     }
     function showLegacy(){
+      if(window._travelConnectBusy) return;
       if(topicPane) topicPane.style.display='none'; if(legacy) legacy.style.display='flex';
       topicTab.classList.remove('on'); legacyTab.classList.add('on'); window._topicTabActive=false;
+      window._topicId=null;
       window._genCtx=(document.querySelector('.tab.on')&&document.querySelector('.tab.on').dataset.tab==='search')?'search':'home';
       try{ if(typeof window._refreshThumbSaved==='function') window._refreshThumbSaved(); }catch(e){}
     }
@@ -1134,6 +1144,43 @@
     // ★원고 보관함
     var drafts=[], draftBusy=false;
     var topicLock=window.topicPublishPlan.createBusyLock(); // ★생성과 보관함 넣기가 에디터를 동시에 쓰지 않게 하나의 잠금
+    window._topicPublishLock=topicLock;
+    window._travelConnectHooks={
+      isBusy:function(){ return !!window._travelConnectBusy || topicLock.busy(); },
+      currentTarget:function(){ try{ return byId('nvweb').getURL()||'현재 주소를 확인하지 못했습니다.'; }catch(e){ return '현재 주소를 확인하지 못했습니다.'; } },
+      deliver:async function(result,draft,required,photoIds,handoffInfo){
+        if(window._travelConnectBusy||!topicLock.tryAcquire()) throw new Error('다른 에디터 작업이 진행 중입니다.');
+        window._travelConnectBusy=true;
+        var prep=null;
+        try{
+          var fresh=await prepareTopicEditor();
+          if(!fresh||!fresh.ok) throw new Error((fresh&&fresh.detail)||'새 에디터를 안전하게 준비하지 못했습니다. 기존 원고는 보존했습니다.');
+          var selected=new Set(Array.isArray(photoIds)?photoIds:[]);
+          var assets=(result.assets||[]).filter(function(asset){return selected.has(asset.id);});
+          var allowed=(required&&required.allowedUrls)||[];
+          await window.topicEditorDelivery.injectTopicPost({
+            post:result.post,assets:assets,purpose:'search',keyword:draft.keyword,connectKind:'travel',
+            setPhotos:function(files){window._myPhotos=files;window._placePhotos=null;window._genType='travel-connect';},
+            setImageMode:function(){var segment=document.querySelector('#img-s');if(segment){segment.querySelectorAll('.s').forEach(function(x){x.classList.remove('on');});var mine=segment.querySelector('[data-img="mine"]');if(mine)mine.classList.add('on');}},
+            beforeInject:async function(finalPost){
+              // Refresh the main-process check only after the fresh-editor wait and
+              // image preparation. This is the last trusted gate before finishGen
+              // starts clearing/pasting into the user's editor.
+              var latest=await window.travelConnectUI.recheckPreparedHandoff({api:window.api,id:draft.id,expectedPost:result.post,finalPost:finalPost});
+              if(!latest.ok) throw new Error('에디터 입력 전 최종 확인 실패: '+latest.reason);
+              var latestPrepared=latest.prepared, latestContext=latest.context;
+              var latestReview=(latestPrepared.reviewReasons||[]).slice().sort(), previousReview=(handoffInfo&&handoffInfo.reviewReasons||[]).slice().sort();
+              if(JSON.stringify(latestReview)!==JSON.stringify(previousReview)&&latestReview.length&&!confirm('전달 직전 검수 사유가 변경되었습니다. 원고 상태는 검수 필요로 유지됩니다.\n\n'+latestReview.join('\n')+'\n\n계속할까요?')) throw new Error('검수 사유가 바뀌어 에디터 전달을 취소했습니다.');
+            },finishGen:finishGen
+          });
+          if(!(await verifyEditorPost(result.post))) throw new Error('에디터에서 원고 입력을 확인하지 못했습니다. 직접 확인해 주세요.');
+        }finally{
+          window._travelConnectBusy=false;
+          window._topicStatusEl=null;
+          topicLock.release();
+        }
+      }
+    };
     // 글쓰기 화면 열기만 한다(복구 팝업은 건드리지 않음).
     async function openEditorNoDismiss(){
       var nv=byId('nvweb');
@@ -2184,7 +2231,7 @@
 
   // ★"나만의 썸네일 서식" — 지금 만든 썸네일 디자인(THEME)을 저장 → 다음 썸네일에 자동 적용.
   //   ★홈판/검색용 완전 분리: 저장 키를 컨텍스트별로 나눈다(savedThumbDesign_home / _search). UI·편집기는 공유해도 저장·적용은 따로.
-  function _thumbKey(){ return window._topicTabActive?'savedThumbDesign_saju':'savedThumbDesign_' + (window._genCtx==='search' ? 'search' : 'home'); }
+  function _thumbKey(){ return window._topicTabActive?('savedThumbDesign_'+(window._topicId||'saju')):'savedThumbDesign_' + (window._genCtx==='search' ? 'search' : 'home'); }
   byId('br-thumb').addEventListener('change', function(){
     if(this.checked){ try{ var d=(typeof window._readThumbDesign==='function')?window._readThumbDesign():null; if(d){ if(d.photo && /^(data:|blob:|https?:)/.test(d.photo)) d.photo='#5a6b7a,#2a3540'; /* 특정 사진은 저장 안 함(디자인·사진배경설정만) */ localStorage.setItem(_thumbKey(), JSON.stringify(d)); } }catch(e){} _brOk('br-thumb-ok', true); }
     else { localStorage.removeItem(_thumbKey()); _brOk('br-thumb-ok', false); }
@@ -3374,7 +3421,7 @@
       const nvurl = (byId('nvweb').getURL ? byId('nvweb').getURL() : '') || '';
       const bm = nvurl.match(/blog\.naver\.com\/([^\/?#]+)/);
       const blogId = (bm && bm[1] && !/GoBlogWrite|PostWrite/i.test(bm[1])) ? bm[1] : '';
-      if(blogId){
+      if(blogId&&window.travelConnectUI.shouldFetchRelatedLinks(genOpts.connectKind)){
         const mp = await window.api.myBlogPosts(blogId);
         if(mp && mp.ok && Array.isArray(mp.posts) && mp.posts.length){
           relatedLinks = pickRelatedPosts(mp.posts, (post.title||'')+' '+(keyword||''), 3);
@@ -3405,8 +3452,9 @@
     }
     try{ if(window.api.debugLog){ var _hpos=[]; var _hi2=-1; (post.blocks||[]).forEach(function(b){ if(b&&b.kind==='heading'){_hi2++;} if(b&&b.kind==='image'){ _hpos.push(_hi2); } }); window.api.debugLog('pool분포(재분배후): 섹션별['+pool.map(function(g){return (g||[]).length;}).join(',')+'] 총'+pool.reduce(function(a,g){return a+(g||[]).length;},0)+' / image블록이속한소제목idx=['+_hpos.join(',')+']'); } }catch(e){}
     // ★주입 인자를 통째로 보관 → 자동발행에서 "주입 실패(본문 안 들어감)" 감지 시 재생성 없이 그대로 재주입하는 데 사용.
-    var _injectArgs = { keyword: kw, imagePool: pool, coupangLinks: coupangLinks||[], freshToken: (genOpts.strictInject?(window._topicFreshToken||''):''), adsense: adsense||null, topImage: topThumb, headingCards: headingCards, relatedLinks: relatedLinks, allowTables: !!genOpts.search, sourceUrl: genOpts.sourceUrl||'', sourceSite: genOpts.sourceSite||'' };
+    var _injectArgs = { keyword: kw, imagePool: pool, coupangLinks: coupangLinks||[], freshToken: (genOpts.strictInject?(window._topicFreshToken||''):''), adsense: adsense||null, topImage: topThumb, headingCards: headingCards, relatedLinks: relatedLinks, allowTables: !!genOpts.search, sourceUrl: genOpts.sourceUrl||'', sourceSite: genOpts.sourceSite||'', connectKind:genOpts.connectKind||'' };
     window._lastInject = { post: post, opts: _injectArgs };
+    if(typeof genOpts.beforeInject==='function') await genOpts.beforeInject(post);
     try{ await injectPost(post, _injectArgs); }catch(e){ if(genOpts.strictInject) throw new Error('에디터에 원고를 넣지 못했습니다: '+((e&&e.message)||e)); /* 일반 흐름: 주입 실패해도 생성물은 보존 */ }
     _ftlog('에디터 주입 완료(끝)');
     // ★"오늘 만든 글 제목" 목록에 기록(홈판/검색용 구분) — 제목 자동입력이 실패했어도 사용자가 복사해 넣을 수 있게.
@@ -4078,7 +4126,9 @@
       var u=String(url||'');
       // ★네이버 커넥트: 도메인만으론 쇼핑/여행 구분 불가 → 콘텐츠(대상·키워드·제목)가 여행(숙소·여행지·패키지)이면 '여행 커넥트', 아니면 '쇼핑 커넥트'.
       if(/shopping\.naver|smartstore\.naver|brand\.naver|naver\.me/i.test(u)){
-        var _t=(((ctx&&ctx.target)||'')+' '+((ctx&&ctx.keyword)||'')+' '+((ctx&&ctx.title)||''));
+      if(ctx&&ctx.connectKind==='travel') return window.connectPolicy.getConnectDisclosure('travel');
+      if(ctx&&ctx.connectKind==='shopping') return window.connectPolicy.getConnectDisclosure('shopping');
+      var _t=(((ctx&&ctx.target)||'')+' '+((ctx&&ctx.keyword)||'')+' '+((ctx&&ctx.title)||''));
         if(/travel|여행|숙소|호텔|펜션|리조트|게스트하우스|풀빌라|모텔|콘도|패키지|항공|투어|여행지|캠핑|글램핑|한옥|료칸/i.test(_t)) return '이 포스팅은 네이버 여행 커넥트 활동의 일환으로, 예약 발생 시 수수료를 제공받습니다.';
         return '이 포스팅은 네이버 쇼핑 커넥트 활동의 일환으로, 판매 발생 시 수수료를 제공받습니다.';
       }
@@ -4247,7 +4297,7 @@
     else if(_discType==='sponsored'){ blocks.unshift({ kind:'text', text:'이 글은 업체로부터 '+(_discItem||'제품/서비스')+'을(를) 지원받고 작성한 후기입니다.', _disclosure:true }); }
     else if(_discType==='commission'){ // ★쿠파스·쇼핑커넥트 등 제휴 = 첫 링크로 플랫폼 판별해 그 고지문을 맨 위에.
       var _clF=(Array.isArray(opts.coupangLinks)&&opts.coupangLinks[0]&&opts.coupangLinks[0].url)||'';
-      var _cd0=_clF ? affiliateDisclosure(_clF, { target:(typeof rvTarget==='function'?rvTarget():''), keyword:opts.keyword, title:(post&&post.title) }) : '이 포스팅은 제휴 마케팅 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.';
+      var _cd0=_clF ? affiliateDisclosure(_clF, { connectKind:opts.connectKind, target:(typeof rvTarget==='function'?rvTarget():''), keyword:opts.keyword, title:(post&&post.title) }) : '이 포스팅은 제휴 마케팅 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.';
       blocks.unshift({ kind:'text', text:_cd0, _disclosure:true });
     }
     else if(_discType==='mine'){ blocks.unshift({ kind:'text', text:'대가 없이 \'내돈내산\'으로 경험한 것만 솔직하게 리뷰합니다.', _disclosure:true }); }
@@ -4271,6 +4321,8 @@
     } else { window._sourceLineText=null; }
     // ★제휴 링크의 플랫폼별 "수수료 고지문" — 도메인으로 감지. (쿠팡은 확정 문구, 그 외는 플랫폼명+공정위 표준 표현)
     function _affiliateDisclosure(links){
+      if(opts.connectKind==='travel') return window.connectPolicy.getConnectDisclosure('travel');
+      if(opts.connectKind==='shopping') return window.connectPolicy.getConnectDisclosure('shopping');
       var urls=(links||[]).map(function(c){ return (c&&c.url)||''; }).join(' ');
       var has=function(re){ return re.test(urls); };
       // 우선순위: 쿠팡 → 네이버 커넥트 → 마켓컬리 → 올리브영 → 토스 → 기타
@@ -5082,9 +5134,12 @@
     var kind = kindOverride || (/[?&]kind=search/.test(location.search) ? 'search' : 'home');
     if(byId('legacy-group')) byId('legacy-group').style.display='flex';
     if(byId('topic-saju-pane')) byId('topic-saju-pane').style.display='none';
+    if(byId('tc-pane')) byId('tc-pane').style.display='none';
+    if(byId('topic-travel-tab')) byId('topic-travel-tab').classList.remove('on');
     if(byId('topic-saju-tab')) byId('topic-saju-tab').classList.remove('on');
     if(byId('topic-legacy-tab')) byId('topic-legacy-tab').classList.add('on');
     window._topicTabActive=false;
+    window._topicId=null;
     window._genCtx = (kind==='search'?'search':'home'); // ★진행 안내를 그 탭에 표시
     window._autoIsTest = !!isTest;
     await autoLog('=== 예약 자동 실행 시작 ('+kind+') ===');
@@ -5418,5 +5473,6 @@
   });
 })();
 </script>
+<script src="travel-connect.js"></script>
 </body>
 </html>

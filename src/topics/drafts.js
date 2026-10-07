@@ -20,6 +20,11 @@ function newDraftId(now) {
 
 function addDraft(store, draft, { now = Date.now() } = {}) {
   const base = normalizeStore(store);
+  // Travel Connect records contain product snapshots used for later rechecks. Never silently
+  // discard an existing (often unrelated saju) draft to make room for one of these records.
+  if (draft && draft.topicId === 'travel-connect' && base.drafts.length >= MAX_DRAFTS) {
+    throw new Error('원고 보관함 용량이 가득 찼습니다. 기존 원고를 정리한 뒤 다시 저장하세요.');
+  }
   const entry = {
     id: draft.id || newDraftId(now),
     topicId: draft.topicId,
