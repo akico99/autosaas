@@ -3,7 +3,32 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { clearRestorePopup, POPUP_PROBE_SCRIPT } = require('../../src/topics/editorGuard');
+const { clearRestorePopup, POPUP_PROBE_SCRIPT, inspectEditorDocument, INSPECT_SCRIPT } = require('../../src/topics/editorGuard');
+
+// 최소 가짜 DOM: 문단마다 일반 글자 조각과 플레이스홀더 조각(parts)을 가진다.
+function fakeDoc(paragraphs, { components = false, token } = {}) {
+  const mk = (parts) => ({
+    textContent: parts.map((p) => p.text).join(''),
+    cloneNode() { const copy = parts.slice(); const node = { querySelectorAll: () => copy.filter((p) => p.ph).map((p) => ({ remove() { copy.splice(copy.indexOf(p), 1); node.textContent = copy.map((x) => x.text).join(''); } })) }; node.textContent = copy.map((p) => p.text).join(''); return node; },
+  });
+  return {
+    __baFresh: token,
+    querySelector: (sel) => (/se-content/.test(sel) ? {} : components ? {} : null),
+    querySelectorAll: () => paragraphs.map(mk),
+  };
+}
+const ph = (text) => ({ text, ph: true });
+const real = (text) => ({ text, ph: false });
+
+test('empty editor (placeholder nodes only) is empty; a real title of exactly "제목" is content', () => {
+  assert.equal(inspectEditorDocument(fakeDoc([[ph('제목')], [ph('글감과 함께 나의 일상을 기록해보세요!')]])).hasContent, false);
+  assert.equal(inspectEditorDocument(fakeDoc([[real('제목')], [ph('글감과 함께 나의 일상을 기록해보세요!')]])).hasContent, true);
+  assert.equal(inspectEditorDocument(fakeDoc([[ph('제목')], [real('본문 한 줄')]])).hasContent, true);
+  assert.equal(inspectEditorDocument(fakeDoc([[ph('제목')]], { components: true })).hasContent, true);
+  assert.equal(inspectEditorDocument(fakeDoc([[ph('제목')]], { token: 'abc' })).token, 'abc');
+  assert.deepEqual(inspectEditorDocument(null), { isEditor: false });
+  assert.match(INSPECT_SCRIPT, /inspectEditorDocument|isEditor/);
+});
 
 function fakeEditor({ popup = true, stubborn = false, latePopupAfterClicks = 0 } = {}) {
   const s = { popup, clicks: [], probes: 0, lateLeft: latePopupAfterClicks };

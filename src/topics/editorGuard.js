@@ -23,7 +23,22 @@ async function clearRestorePopup({ probe, click, sleep } = {}, { maxTries = 5 } 
   return { ok: false, clicks, detail: 'popup-still-open' };
 }
 
-const api = { clearRestorePopup, POPUP_PROBE_SCRIPT };
+// 에디터 상태 읽기(페이지 안에서 실행되는 순수 DOM 함수). 플레이스홀더 노드([class*=placeholder])만 빼고 남은 글자가 있으면 내용 있음 —
+// 실제 제목이 정확히 '제목'이어도 플레이스홀더 노드가 아니라면 내용으로 본다(보수적: 애매하면 저장).
+function inspectEditorDocument(d) {
+  if (!d || !d.querySelector('.se-content, .se-title-text')) return { isEditor: false };
+  var has = false;
+  [].slice.call(d.querySelectorAll('.se-text-paragraph')).forEach(function (p) {
+    var c = p.cloneNode(true);
+    [].slice.call(c.querySelectorAll('[class*=placeholder]')).forEach(function (x) { x.remove(); });
+    if ((c.textContent || '').replace(/[\s\u200b]+/g, '').length > 0) has = true;
+  });
+  if (!has && d.querySelector('.se-component.se-image, .se-component.se-oglink, .se-component.se-map, .se-component.se-table, .se-component.se-video, .se-component.se-file, .se-component.se-quotation, .se-component.se-horizontalLine, .se-component.se-code, .se-component.se-sticker')) has = true;
+  return { isEditor: true, hasContent: has, token: d.__baFresh || null };
+}
+const INSPECT_SCRIPT = "(function(){var f=document.getElementById('mainFrame');if(!f)return {isEditor:false};var d=null;try{d=f.contentDocument;}catch(e){}return (" + inspectEditorDocument.toString() + ")(d);})()";
+
+const api = { clearRestorePopup, POPUP_PROBE_SCRIPT, inspectEditorDocument, INSPECT_SCRIPT };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof window !== 'undefined') window.topicEditorGuard = api;
 })();

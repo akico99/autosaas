@@ -1083,11 +1083,12 @@
       if(!profileSelect.value){ status.textContent='블로그 프로필을 선택해 주세요.'; return; }
       var pubPlan=readPublishPlan(); if(!pubPlan.ok){ status.className='status on'; status.textContent=pubPlan.error; return; }
       if(!assets.length&&!window.confirm('사용 가능한 사진이 없습니다. 사진 없이 글을 만들까요?')) return;
+      if(!topicLock.tryAcquire()){ status.className='status on'; status.textContent='다른 원고를 만들거나 에디터에 넣는 중입니다. 끝난 뒤 다시 눌러 주세요.'; return; }
       button.disabled=true; status.className='status on'; status.textContent='원고를 만들고 있습니다…';
       var purpose=byId('topic-purpose').value; window._genCtx=purpose==='search'?'search':'home'; window._topicTabActive=true; window._topicStatusEl=status;
       try{
         // ★생성 전에 글쓰기 화면을 먼저 확보 — 로그아웃·다른 페이지 상태를 원고 생성(토큰 사용) 전에 잡는다.
-        if(!(await ensureEditorPage(function(t){ status.className='status on'; status.textContent=t; }))) throw new Error('네이버 글쓰기 화면을 열지 못해 생성을 시작하지 않았습니다. 오른쪽 화면에서 로그인 상태를 확인해 주세요.');
+        await topicEntryCheck(); // 복구 팝업이 떠 있으면 닫지 않고 멈춘다(글쓰기 화면이 아니면 열기만)
         status.textContent='원고를 만들고 있습니다…';
         var request={topicId:'saju',profileKey:profileSelect.value,keyword:keyword,purpose:purpose,productKey:productSelect.value,opts:{}};
         var result=await window.api.generateTopic(request);
@@ -1101,7 +1102,7 @@
         status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+esc(doneMsg)+(result.status==='review'?' (검수 필요 원고)':'')+strategyLine(result); renderGenWarnings(result,status);
         window._genResult=result.status==='review'?'ok':'ok'; await refreshPerf();
       }catch(e){ status.className='status on'; status.textContent='오류: '+e.message; window._genResult='err:'+e.message; }
-      finally{ window._topicStatusEl=null; button.disabled=false; }
+      finally{ topicLock.release(); window._topicStatusEl=null; button.disabled=false; }
     });
     // ★원고 전략 한 줄 — 어떤 기준으로 썼는지(오늘 검색 화면/저장된 분석/홈판 기준)와 주의점.
     var FORMAT_NAME={review:'이용 후기형',recommend:'추천·모음형',howto:'방법·안내형',definition:'뜻·개념형',compare:'비교형',mixed:'혼합'};
@@ -1132,15 +1133,47 @@
     }
     // ★원고 보관함
     var drafts=[], draftBusy=false;
+    var topicLock=window.topicPublishPlan.createBusyLock(); // ★생성과 보관함 넣기가 에디터를 동시에 쓰지 않게 하나의 잠금
+    // 글쓰기 화면 열기만 한다(복구 팝업은 건드리지 않음).
+    async function openEditorNoDismiss(){
+      var nv=byId('nvweb');
+      try{ if(nv.stop) nv.stop(); await nv.loadURL('https://blog.naver.com/GoBlogWrite.naver'); }catch(e){}
+      for(var i=0;i<30;i++){ await _sleepA(1000); if(await isOnEditorPage()) break; }
+      await _sleepA(1200);
+    }
+    async function topicEntryCheck(){
+      var nv=byId('nvweb');
+      var r=await window.topicPublishPlan.checkEditorEntry({
+        probePopup:function(){ return nv.executeJavaScript(window.topicEditorGuard.POPUP_PROBE_SCRIPT); },
+        inspect:function(){ return nv.executeJavaScript(_NV_INSPECT); },
+        ensureEditor:openEditorNoDismiss
+      });
+      if(!r.ok) throw new Error(r.detail);
+    }
+    async function prepareTopicEditor(){
+      var nv=byId('nvweb'); window._topicFreshToken='';
+      var prep=await window.topicPublishPlan.prepareFreshEditor({
+        probePopup:function(){ return nv.executeJavaScript(window.topicEditorGuard.POPUP_PROBE_SCRIPT); },
+        inspect:function(){ return nv.executeJavaScript(_NV_INSPECT); },
+        mark:function(){ return nv.executeJavaScript(_NV_MARK); },
+        save:function(){ return saveNaverDraft(); },
+        openNew:async function(){ try{ if(nv.stop) nv.stop(); await nv.loadURL('https://blog.naver.com/GoBlogWrite.naver'); }catch(e){} },
+        ensureEditor:openEditorNoDismiss,
+        guard:guardRestorePopup, sleep:_sleepA
+      });
+      if(prep.ok) window._topicFreshToken=prep.token;
+      return prep;
+    }
     // ★임시저장(기본) 또는 네이버 예약 발행 — 날짜 검증은 생성·에디터 이동 전에 한다.
     function readPublishPlan(){
       return window.topicPublishPlan.parsePublishPlan({mode:byId('topic-reserve').checked?'reserve':'draft',date:byId('topic-reserve-date').value,time:byId('topic-reserve-time').value});
     }
     byId('topic-reserve').addEventListener('change',function(){ byId('topic-reserve-fields').style.display=this.checked?'flex':'none'; });
-    var STAGE_LABEL={'inject-failed':'에디터에 원고를 넣지 못했습니다','body-missing':'에디터에서 원고 내용을 확인하지 못했습니다','save-failed':'임시저장 완료를 확인하지 못했습니다','schedule-failed':'네이버 예약 발행을 등록하지 못했습니다'};
+    var STAGE_LABEL={'prepare-failed':'새 글쓰기 문서를 준비하지 못해 입력을 중단했습니다(쓰던 내용은 지우지 않았습니다)','inject-failed':'에디터에 원고를 넣지 못했습니다','body-missing':'에디터에서 원고 내용을 확인하지 못했습니다','save-failed':'임시저장 완료를 확인하지 못했습니다','schedule-failed':'네이버 예약 발행을 등록하지 못했습니다'};
     async function deliverTopic(result,purpose,keyword,parsedPlan){
       var plan=parsedPlan&&parsedPlan.plan; if(!parsedPlan||!parsedPlan.ok||!plan) throw new Error('발행 계획이 올바르지 않습니다.');
       var r=await window.topicPublishPlan.deliverToEditor({plan:plan},{
+        prepare:function(){ return prepareTopicEditor(); },
         inject:function(){ return injectTopicResult(result,purpose,keyword); },
         verify:function(){ return verifyEditorPost(result.post); },
         save:function(){ return saveNaverDraft(); },
@@ -1219,13 +1252,15 @@
       var act=btn.getAttribute('data-act');
       if(act==='edit'){ var ed=row.querySelector('.draft-editor'); var open=ed.style.display==='none'; ed.style.display=open?'block':'none'; if(open) ed.querySelector('textarea').value=d.text||''; return; }
       if(act==='delete'){ if(!window.confirm('"'+d.keyword+'" 원고를 보관함에서 삭제할까요?')) return; await window.api.topicDraftsDelete(id); await refreshDrafts(); return; }
-      draftBusy=true; btn.disabled=true;
+      draftBusy=true; btn.disabled=true; var lockHeld=false;
       try{
         if(act==='save'){
           var r=await window.api.topicDraftsUpdate(id,row.querySelector('.draft-editor textarea').value||''); if(!r||!r.ok) throw new Error((r&&r.error)||'저장하지 못했습니다.');
           await refreshDrafts(); return;
         }
         if(act==='inject'){
+          if(!topicLock.tryAcquire()){ window.alert('다른 원고를 만들거나 에디터에 넣는 중입니다. 끝난 뒤 다시 눌러 주세요.'); return; }
+          lockHeld=true;
           if(d.status==='hold'&&!window.confirm('발행 보류 원고입니다('+(d.holdReasons||[]).join(' / ')+'). 그래도 에디터에 넣을까요?')) return;
           var dPlan=readPublishPlan(); if(!dPlan.ok){ window.alert(dPlan.error); return; }
           status.className='status on'; status.textContent='보관함 원고를 에디터에 넣는 중… ("'+d.keyword+'")'; window._topicStatusEl=status;
@@ -1235,7 +1270,7 @@
           await refreshDrafts();
         }
       }catch(e){ window.alert('오류: '+e.message); }
-      finally{ draftBusy=false; btn.disabled=false; window._topicStatusEl=null; }
+      finally{ if(lockHeld) topicLock.release(); draftBusy=false; btn.disabled=false; window._topicStatusEl=null; }
     });
     refreshDrafts();
     Promise.all([window.api.topicConfig('saju'),refreshProfiles(),refreshAssets(),refreshPerf()]).then(function(results){
@@ -3370,7 +3405,7 @@
     }
     try{ if(window.api.debugLog){ var _hpos=[]; var _hi2=-1; (post.blocks||[]).forEach(function(b){ if(b&&b.kind==='heading'){_hi2++;} if(b&&b.kind==='image'){ _hpos.push(_hi2); } }); window.api.debugLog('pool분포(재분배후): 섹션별['+pool.map(function(g){return (g||[]).length;}).join(',')+'] 총'+pool.reduce(function(a,g){return a+(g||[]).length;},0)+' / image블록이속한소제목idx=['+_hpos.join(',')+']'); } }catch(e){}
     // ★주입 인자를 통째로 보관 → 자동발행에서 "주입 실패(본문 안 들어감)" 감지 시 재생성 없이 그대로 재주입하는 데 사용.
-    var _injectArgs = { keyword: kw, imagePool: pool, coupangLinks: coupangLinks||[], adsense: adsense||null, topImage: topThumb, headingCards: headingCards, relatedLinks: relatedLinks, allowTables: !!genOpts.search, sourceUrl: genOpts.sourceUrl||'', sourceSite: genOpts.sourceSite||'' };
+    var _injectArgs = { keyword: kw, imagePool: pool, coupangLinks: coupangLinks||[], freshToken: (genOpts.strictInject?(window._topicFreshToken||''):''), adsense: adsense||null, topImage: topThumb, headingCards: headingCards, relatedLinks: relatedLinks, allowTables: !!genOpts.search, sourceUrl: genOpts.sourceUrl||'', sourceSite: genOpts.sourceSite||'' };
     window._lastInject = { post: post, opts: _injectArgs };
     try{ await injectPost(post, _injectArgs); }catch(e){ if(genOpts.strictInject) throw new Error('에디터에 원고를 넣지 못했습니다: '+((e&&e.message)||e)); /* 일반 흐름: 주입 실패해도 생성물은 보존 */ }
     _ftlog('에디터 주입 완료(끝)');
@@ -3908,6 +3943,11 @@
       return !!(await byId('nvweb').executeJavaScript("(function(){var f=document.getElementById('mainFrame');if(!f)return false;var d;try{d=f.contentDocument;}catch(e){return false;}if(!d)return false;return !!(d.querySelector('.se-content')&&d.querySelector('[contenteditable=\"true\"]')&&(d.querySelector('.se-toolbar')||d.querySelector('.se-title-text')));})()"));
     }catch(e){ return false; }
   }
+  // ★원고마다 새 문서 — 에디터 상태 읽기/표식. 비어 있음 = 제목이 '제목'(플레이스홀더)뿐이고, 본문 문단에 알려진 플레이스홀더 외 글자가 없고, 이미지·표 등 컴포넌트가 없음.
+  //   표식(__baFresh)은 iframe 문서 객체에 붙여, 새 글쓰기로 문서가 바뀌면 사라지는 것으로 "새 문서"를 판별한다(URL은 같을 수 있음).
+  var _NV_INSPECT=window.topicEditorGuard.INSPECT_SCRIPT;
+  var _NV_MARK="(function(){var f=document.getElementById('mainFrame');var d=null;try{d=f&&f.contentDocument;}catch(e){}if(!d)return null;var t='fe'+Date.now()+Math.random().toString(36).slice(2);d.__baFresh=t;return t;})()";
+  async function freshEditorOk(token){ try{ var st=await byId('nvweb').executeJavaScript(_NV_INSPECT); return !!(st&&st.isEditor&&!st.hasContent&&token&&st.token===token); }catch(e){ return false; } }
   // ★"작성 중인 글이 있습니다" 복구 팝업 — 떠 있는 채로 전체선택·삭제·입력하면 팝업 글자가 선택되는 사고가 난다. 편집 전에 그 팝업의 취소 버튼만 눌러 닫고 닫힘을 확인한다.
   async function guardRestorePopup(){
     var nv=byId('nvweb');
@@ -3999,7 +4039,9 @@
     // ★지금 화면이 글쓰기 에디터가 아니면 글쓰기 페이지부터 연다(블로그 홈·글 보기 화면에서 길을 잃던 문제).
     if(!(await ensureEditorPage(setSt))) throw new Error('네이버 글쓰기 화면을 찾지 못했습니다.');
     // ★★주입 전 에디터 확실히 비우기 — 이전 글(다른 제품/주제)이 남아 새 글과 섞이는 것 방지.
-    setSt('이전 글 정리 중…'); try{ await clearEditorBody(); }catch(e){ if(e&&e.popupGuard) throw e; }
+    // ★새로 준비한 에디터(주제 탭)는 지우지 않는다 — 표식이 그대로이고 비어 있는지만 확인. 아니면 쓰던 내용을 건드리지 않고 중단.
+    if(opts.freshToken){ if(!(await freshEditorOk(opts.freshToken))) throw Object.assign(new Error('새로 준비한 에디터가 바뀌었거나 비어 있지 않아 입력을 중단했습니다. 쓰던 내용은 지우지 않았습니다.'),{popupGuard:true}); }
+    if(!opts.freshToken){ setSt('이전 글 정리 중…'); try{ await clearEditorBody(); }catch(e){ if(e&&e.popupGuard) throw e; } }
     // ★[진단] 쿠팡 링크가 실제로 넘어왔는지 + 링크블록/CPLINK 개수 기록 (링크 카드 안 되는 원인 추적용).
     try{
       var _cpl=(opts.coupangLinks||[]);
@@ -4926,14 +4968,16 @@
       + "return null;}"
       + "var c=f(document);if(c==null){var fr=document.getElementById('mainFrame');if(fr&&fr.contentDocument)c=f(fr.contentDocument);}return c;})()"); }catch(e){ return null; } };
     var beforeCount=await readCount();
+    var readToast=async function(){ try{ return !!(await nv.executeJavaScript("(function(){try{var top=(document.body&&document.body.innerText)||'';var fr=document.getElementById('mainFrame');var inner=(fr&&fr.contentDocument&&fr.contentDocument.body&&fr.contentDocument.body.innerText)||'';var t=top+' '+inner;return /임시\\s*저장이?\\s*완료|임시저장되었습니다|저장되었습니다/.test(t);}catch(e){return false;}})()")); }catch(e){ return false; } };
+    var beforeToast=await readToast(); // 이전 저장의 토스트가 아직 떠 있으면 새 확인으로 인정하지 않는다
     // ★확인 헬퍼 — 토스트("임시저장 완료") 또는 "저장 옆 숫자 증가" 중 하나면 진짜 저장. 성공 시 "저장됨 (시각)" 표시.
     var confirmSaved=async function(maxTries){
       for(var i=0;i<maxTries;i++){
         await new Promise(function(r){ setTimeout(r,500); });
         var toast=false;
-        try{ toast=await nv.executeJavaScript("(function(){try{var top=(document.body&&document.body.innerText)||'';var fr=document.getElementById('mainFrame');var inner=(fr&&fr.contentDocument&&fr.contentDocument.body&&fr.contentDocument.body.innerText)||'';var t=top+' '+inner;return /임시\\s*저장이?\\s*완료|임시저장되었습니다|저장되었습니다/.test(t);}catch(e){return false;}})()"); }catch(e){}
+        toast=await readToast();
         var nowCount=await readCount();
-        if(toast || (beforeCount!=null && nowCount!=null && nowCount>beforeCount)){
+        if(window.topicPublishPlan.saveConfirmed({beforeCount:beforeCount,nowCount:nowCount,toast:toast,beforeToast:beforeToast})){
           var _d=new Date(), _hh=_d.getHours(), _ap=_hh<12?'오전':'오후', _h12=((_hh%12)||12), _mm=String(_d.getMinutes()).padStart(2,'0');
           window._lastSaveAt=_ap+' '+_h12+':'+_mm;
           var _sst=_curSt(); if(_sst){ _sst.className='status on'; _sst.innerHTML='✅ <b>저장됨</b> ('+window._lastSaveAt+')'+(nowCount!=null?(' · 임시저장 '+nowCount+'개'):''); }
