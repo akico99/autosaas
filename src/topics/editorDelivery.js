@@ -14,7 +14,8 @@ async function injectTopicPost({ post, assets, purpose, keyword, finishGen, setP
   const payload = topicEditorPayload({ post, assets, purpose, keyword });
   if (typeof setPhotos === 'function') setPhotos(payload.photos.slice());
   if (typeof setImageMode === 'function') setImageMode(payload.purpose);
-  await finishGen(payload.post, payload.keyword, [], null, { search: payload.purpose === 'search' });
+  const gen = await finishGen(payload.post, payload.keyword, [], null, { search: payload.purpose === 'search', strictInject: true });
+  if (gen && gen.ok === false) throw new Error(gen.error || '에디터에 원고를 넣지 못했습니다.');
   return payload;
 }
 

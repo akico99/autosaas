@@ -182,7 +182,7 @@ test('topic editor handoff sends mapped photos through an injected finishGen fak
   assert.deepEqual(calls[0][1], ['C:\\framed\\one.png']);
   assert.deepEqual(calls[1], ['mode', 'search']);
   assert.equal(calls[2][0], 'finish');
-  assert.deepEqual(calls[2].slice(1), [post, '사주풀이', [], null, { search: true }]);
+  assert.deepEqual(calls[2].slice(1), [post, '사주풀이', [], null, { search: true, strictInject: true }]);
 });
 
 test('topic profile persistence writes through a temporary file and renames atomically', () => {

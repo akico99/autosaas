@@ -325,6 +325,9 @@
         <div class="topic-card">
           <button type="button" class="rsavebtn" id="topic-generate" style="width:100%">글 만들기</button>
           <div class="status" id="topic-status"></div>
+          <div class="subnote" style="margin-top:8px">기본: 에디터에 넣은 뒤 네이버 임시저장까지 합니다. 발행은 하지 않습니다.</div>
+          <label style="display:flex;gap:6px;align-items:center;margin-top:6px"><input type="checkbox" id="topic-reserve"> 네이버 예약 발행으로 등록 (앱을 꺼도 네이버가 발행)</label>
+          <div id="topic-reserve-fields" style="display:none;gap:6px;margin-top:6px;align-items:center"><label>날짜 <input type="date" id="topic-reserve-date"></label><label>시간 <input type="time" id="topic-reserve-time" step="600"></label><span class="subnote">한국 시간(Asia/Seoul)</span></div>
         </div>
         <details class="topic-card" id="topic-drafts-panel" open>
           <summary style="cursor:pointer;font-weight:800">🗂️ 원고 보관함 (미리 만들기 · 불러오기)</summary>
@@ -868,6 +871,8 @@
 
 
 <script src="../src/topics/editorDelivery.js"></script>
+<script src="../src/topics/publishPlan.js"></script>
+<script src="../src/topics/editorGuard.js"></script>
 <script>
   const byId = (id) => document.getElementById(id);
   const keywordToolOnly = new URLSearchParams(window.location.search).get('mode') === 'keywords';
@@ -1076,6 +1081,7 @@
       var button=this; var keyword=(keywordInput.value||'').trim();
       if(!keyword){ status.textContent='키워드를 입력하거나 우선순위 목록에서 선택해 주세요.'; return; }
       if(!profileSelect.value){ status.textContent='블로그 프로필을 선택해 주세요.'; return; }
+      var pubPlan=readPublishPlan(); if(!pubPlan.ok){ status.className='status on'; status.textContent=pubPlan.error; return; }
       if(!assets.length&&!window.confirm('사용 가능한 사진이 없습니다. 사진 없이 글을 만들까요?')) return;
       button.disabled=true; status.className='status on'; status.textContent='원고를 만들고 있습니다…';
       var purpose=byId('topic-purpose').value; window._genCtx=purpose==='search'?'search':'home'; window._topicTabActive=true; window._topicStatusEl=status;
@@ -1091,8 +1097,8 @@
         if(result.status==='hold'){
           status.className='status on'; status.textContent='발행 보류 — '+(result.holdReasons||[]).join(' / '); renderGenWarnings(result,status); window._genResult='hold:'+((result.holdReasons||[]).join(' / ')); return;
         }
-        await injectTopicResult(result,purpose,keyword);
-        status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+(result.status==='review'?'검수 후 발행하세요':'원고 작성됨')+strategyLine(result); renderGenWarnings(result,status);
+        var doneMsg=await deliverTopic(result,purpose,keyword,pubPlan);
+        status.className='status on'; status.innerHTML='완료! <b>'+esc((result.post&&result.post.title)||'')+'</b> — '+esc(doneMsg)+(result.status==='review'?' (검수 필요 원고)':'')+strategyLine(result); renderGenWarnings(result,status);
         window._genResult=result.status==='review'?'ok':'ok'; await refreshPerf();
       }catch(e){ status.className='status on'; status.textContent='오류: '+e.message; window._genResult='err:'+e.message; }
       finally{ window._topicStatusEl=null; button.disabled=false; }
@@ -1126,6 +1132,23 @@
     }
     // ★원고 보관함
     var drafts=[], draftBusy=false;
+    // ★임시저장(기본) 또는 네이버 예약 발행 — 날짜 검증은 생성·에디터 이동 전에 한다.
+    function readPublishPlan(){
+      return window.topicPublishPlan.parsePublishPlan({mode:byId('topic-reserve').checked?'reserve':'draft',date:byId('topic-reserve-date').value,time:byId('topic-reserve-time').value});
+    }
+    byId('topic-reserve').addEventListener('change',function(){ byId('topic-reserve-fields').style.display=this.checked?'flex':'none'; });
+    var STAGE_LABEL={'inject-failed':'에디터에 원고를 넣지 못했습니다','body-missing':'에디터에서 원고 내용을 확인하지 못했습니다','save-failed':'임시저장 완료를 확인하지 못했습니다','schedule-failed':'네이버 예약 발행을 등록하지 못했습니다'};
+    async function deliverTopic(result,purpose,keyword,parsedPlan){
+      var plan=parsedPlan&&parsedPlan.plan; if(!parsedPlan||!parsedPlan.ok||!plan) throw new Error('발행 계획이 올바르지 않습니다.');
+      var r=await window.topicPublishPlan.deliverToEditor({plan:plan},{
+        inject:function(){ return injectTopicResult(result,purpose,keyword); },
+        verify:function(){ return verifyEditorPost(result.post); },
+        save:function(){ return saveNaverDraft(); },
+        schedule:function(p){ var again=window.topicPublishPlan.parsePublishPlan({mode:'reserve',date:p.date,time:p.time}); if(!again.ok) return 'schedule-expired'; return scheduleNaverPublish(p); }
+      });
+      if(!r.ok) throw new Error((STAGE_LABEL[r.stage]||r.stage)+(r.detail?' ('+r.detail+')':'')+(r.stage==='schedule-failed'||r.stage==='save-failed'?' — 네이버 글쓰기 화면을 직접 확인해 주세요.':''));
+      return r.stage==='scheduled'?'네이버 예약 발행 등록 완료 ('+plan.date+' '+plan.time+' 한국시간)':'네이버 임시저장 완료 — 검수 후 발행하세요';
+    }
     var STATUS_LABEL={ready:'✅ 발행 준비',review:'🔍 검수 필요',hold:'⛔ 발행 보류',error:'❌ 생성 실패'};
     function draftRequestBase(){ return {topicId:'saju',profileKey:profileSelect.value,purpose:byId('topic-purpose').value,productKey:productSelect.value}; }
     function renderDrafts(){
@@ -1204,10 +1227,11 @@
         }
         if(act==='inject'){
           if(d.status==='hold'&&!window.confirm('발행 보류 원고입니다('+(d.holdReasons||[]).join(' / ')+'). 그래도 에디터에 넣을까요?')) return;
+          var dPlan=readPublishPlan(); if(!dPlan.ok){ window.alert(dPlan.error); return; }
           status.className='status on'; status.textContent='보관함 원고를 에디터에 넣는 중… ("'+d.keyword+'")'; window._topicStatusEl=status;
-          await injectTopicResult(d.result,d.purpose,d.keyword);
+          var dMsg=await deliverTopic(d.result,d.purpose,d.keyword,dPlan);
           await window.api.topicDraftsMarkInjected(id);
-          status.innerHTML='완료! <b>'+esc(d.result.post.title||'')+'</b> — 보관함 원고를 넣었습니다. 검수 후 발행하세요.'+strategyLine(d.result); renderGenWarnings(d.result,status);
+          status.innerHTML='완료! <b>'+esc(d.result.post.title||'')+'</b> — '+esc(dMsg)+strategyLine(d.result); renderGenWarnings(d.result,status);
           await refreshDrafts();
         }
       }catch(e){ window.alert('오류: '+e.message); }
@@ -3348,7 +3372,7 @@
     // ★주입 인자를 통째로 보관 → 자동발행에서 "주입 실패(본문 안 들어감)" 감지 시 재생성 없이 그대로 재주입하는 데 사용.
     var _injectArgs = { keyword: kw, imagePool: pool, coupangLinks: coupangLinks||[], adsense: adsense||null, topImage: topThumb, headingCards: headingCards, relatedLinks: relatedLinks, allowTables: !!genOpts.search, sourceUrl: genOpts.sourceUrl||'', sourceSite: genOpts.sourceSite||'' };
     window._lastInject = { post: post, opts: _injectArgs };
-    try{ await injectPost(post, _injectArgs); }catch(e){ /* 주입 실패해도 생성물은 보존 */ }
+    try{ await injectPost(post, _injectArgs); }catch(e){ if(genOpts.strictInject) throw new Error('에디터에 원고를 넣지 못했습니다: '+((e&&e.message)||e)); /* 일반 흐름: 주입 실패해도 생성물은 보존 */ }
     _ftlog('에디터 주입 완료(끝)');
     // ★"오늘 만든 글 제목" 목록에 기록(홈판/검색용 구분) — 제목 자동입력이 실패했어도 사용자가 복사해 넣을 수 있게.
     try{ if(window.api.addTitle && post && post.title) await window.api.addTitle(post.title, genOpts.search?'search':'home', !!window._lastTitleOk); }catch(e){}
@@ -3884,8 +3908,21 @@
       return !!(await byId('nvweb').executeJavaScript("(function(){var f=document.getElementById('mainFrame');if(!f)return false;var d;try{d=f.contentDocument;}catch(e){return false;}if(!d)return false;return !!(d.querySelector('.se-content')&&d.querySelector('[contenteditable=\"true\"]')&&(d.querySelector('.se-toolbar')||d.querySelector('.se-title-text')));})()"));
     }catch(e){ return false; }
   }
+  // ★"작성 중인 글이 있습니다" 복구 팝업 — 떠 있는 채로 전체선택·삭제·입력하면 팝업 글자가 선택되는 사고가 난다. 편집 전에 그 팝업의 취소 버튼만 눌러 닫고 닫힘을 확인한다.
+  async function guardRestorePopup(){
+    var nv=byId('nvweb');
+    return window.topicEditorGuard.clearRestorePopup({
+      probe:function(){ return nv.executeJavaScript(window.topicEditorGuard.POPUP_PROBE_SCRIPT); },
+      click:function(x,y){ return window.api.editorClickAt(nv.getWebContentsId(), x, y); },
+      sleep:_sleepA
+    });
+  }
+  async function guardRestorePopupOrThrow(){
+    var g=await guardRestorePopup(); if(g.ok) return;
+    var e=new Error('네이버 "작성 중인 글이 있습니다" 팝업을 닫지 못해 편집을 중단했습니다. 오른쪽 화면에서 직접 [취소]를 눌러 주세요.'); e.popupGuard=true; throw e;
+  }
   async function ensureEditorPage(setSt){
-    if(await isOnEditorPage()) return true;
+    if(await isOnEditorPage()){ return (await guardRestorePopup()).ok; }
     const nv=byId('nvweb'); if(!nv) return false;
     const say=(t)=>{ try{ if(typeof setSt==='function') setSt(t); }catch(e){} };
     say('네이버 글쓰기 화면으로 이동 중…');
@@ -3893,11 +3930,10 @@
     try{ nv.loadURL ? await nv.loadURL('https://blog.naver.com/GoBlogWrite.naver').catch(function(){}) : nv.setAttribute('src','https://blog.naver.com/GoBlogWrite.naver'); }
     catch(e){ try{ nv.setAttribute('src','https://blog.naver.com/GoBlogWrite.naver'); }catch(_){} }
     const sl=(ms)=>new Promise(r=>setTimeout(r,ms));
-    const dismissScript="(function(){function pick(doc,inTop){if(!doc)return null;var bs=[].slice.call(doc.querySelectorAll('button,a,[role=button],span,div'));var b=bs.find(function(x){var t=(x.textContent||'').replace(/\\s+/g,'');return (t==='취소'||t==='새로작성'||t==='새글작성'||t==='새글쓰기'||t==='아니오'||t==='아니요')&&x.children.length<=2&&x.getBoundingClientRect().width>0;});if(!b)return null;var r=b.getBoundingClientRect();var off={l:0,t:0};if(!inTop){var fr=document.getElementById('mainFrame');if(fr){var fb=fr.getBoundingClientRect();off={l:fb.left,t:fb.top};}}return {x:Math.round(off.l+r.left+r.width/2),y:Math.round(off.t+r.top+r.height/2)};}var t=(document.body&&document.body.innerText||'');var mf=document.getElementById('mainFrame');try{if(mf&&mf.contentDocument&&mf.contentDocument.body)t+=' '+mf.contentDocument.body.innerText;}catch(e){}if(!/작성\\s*중인\\s*글/.test(t))return null;var d=pick(document,true);if(!d&&mf){try{d=pick(mf.contentDocument,false);}catch(e){}}return d;})()";
     let ready=false;
     for(let i=0;i<30;i++){
       await sl(1000);
-      try{ const loc=await nv.executeJavaScript(dismissScript); if(loc&&loc.x){ await window.api.editorClickAt(nv.getWebContentsId(), loc.x, loc.y); await sl(700); } }catch(e){}
+      try{ await guardRestorePopup(); }catch(e){}
       if(await isOnEditorPage()){ ready=true; break; }
     }
     if(!ready){
@@ -3906,17 +3942,19 @@
       return false;
     }
     // 에디터가 뜬 직후 늦게 나오는 "작성 중인 글" 팝업 한 번 더 확인
-    for(let i=0;i<3;i++){ await sl(600); try{ const loc=await nv.executeJavaScript(dismissScript); if(loc&&loc.x){ await window.api.editorClickAt(nv.getWebContentsId(), loc.x, loc.y); break; } }catch(e){} }
-    return true;
+    await sl(900);
+    return (await guardRestorePopup()).ok;
   }
   // ★새 글 주입 직전 에디터 "확실히 비우기" — 전체선택(Cmd+A)→삭제. GoBlogWrite 재로드가 실패해도 옛 글이 절대 안 남게(섬유탈취제인데 철분 나오던 버그 방지).
   //   빈 에디터에 해도 무해. 남은 게 있으면 최대 3회 재시도.
   async function clearEditorBody(){
+    if(!(await guardRestorePopup()).ok) throw Object.assign(new Error('네이버 "작성 중인 글이 있습니다" 팝업이 열려 있어 에디터 비우기를 중단했습니다.'),{popupGuard:true});
     const nv=byId('nvweb'); const wcId=nv.getWebContentsId();
     const _sl=(ms)=>new Promise(r=>setTimeout(r,ms));
     const bodyLoad=async()=>{ try{ return await nv.executeJavaScript("(function(){var d=document.getElementById('mainFrame').contentDocument;if(!d)return 0;var t=d.querySelector('.se-content')||d.body;var txt=((t&&t.textContent)||'').replace(/\\s+/g,'').length;var comp=d.querySelectorAll('.se-component.se-image, .se-component.se-oglink, .se-component.se-map, .se-component.se-table').length;return txt+comp*20;})()"); }catch(e){ return -1; } };
     let result='';
     for(let k=0;k<3;k++){
+      if(!(await guardRestorePopup()).ok) throw Object.assign(new Error('네이버 "작성 중인 글이 있습니다" 팝업이 열려 있어 에디터 비우기를 중단했습니다.'),{popupGuard:true});
       try{
         // 본문 첫 문단에 진짜 클릭 → 편집칸 포커스 (Cmd+A가 iframe 편집영역에 먹도록)
         await nv.executeJavaScript("(function(){var d=document.getElementById('mainFrame').contentDocument,W=d.defaultView;var p=d.querySelector('.se-component.se-text .se-text-paragraph')||d.querySelector('.se-text-paragraph');if(!p)return 'no';['mousedown','mouseup','click'].forEach(function(t){try{p.dispatchEvent(new W.MouseEvent(t,{bubbles:true,cancelable:true,view:W}));}catch(e){}});try{W.focus();}catch(e){}try{p.focus();}catch(e){}return 'ok';})()").catch(function(){});
@@ -3961,7 +3999,7 @@
     // ★지금 화면이 글쓰기 에디터가 아니면 글쓰기 페이지부터 연다(블로그 홈·글 보기 화면에서 길을 잃던 문제).
     if(!(await ensureEditorPage(setSt))) throw new Error('네이버 글쓰기 화면을 찾지 못했습니다.');
     // ★★주입 전 에디터 확실히 비우기 — 이전 글(다른 제품/주제)이 남아 새 글과 섞이는 것 방지.
-    setSt('이전 글 정리 중…'); try{ await clearEditorBody(); }catch(e){}
+    setSt('이전 글 정리 중…'); try{ await clearEditorBody(); }catch(e){ if(e&&e.popupGuard) throw e; }
     // ★[진단] 쿠팡 링크가 실제로 넘어왔는지 + 링크블록/CPLINK 개수 기록 (링크 카드 안 되는 원인 추적용).
     try{
       var _cpl=(opts.coupangLinks||[]);
@@ -4077,6 +4115,7 @@
       const _filled=(s)=>!!(s && s.replace(/\s/g,'').length>0 && s.trim()!=='제목'); // '제목'=빈칸 플레이스홀더
       let _ok=false, _log='';
       for(let _ta=0; _ta<4 && _tval && !_ok; _ta++){
+        if(!(await guardRestorePopup()).ok) throw Object.assign(new Error('네이버 "작성 중인 글이 있습니다" 팝업이 열려 있어 제목 입력을 중단했습니다.'),{popupGuard:true});
         try{ byId('nvweb').focus(); }catch(e){}
         // ★제목칸 "포커스 + 기존 내용 전체 선택" 후 붙여넣기 = 교체(append 방지). 포커스만 하면 재시도 때 덧붙어 제목이 2배가 된다(중복 버그).
         let _fr=''; try{ _fr=await byId('nvweb').executeJavaScript("(function(){var f=document.getElementById('mainFrame');if(!f||!f.contentDocument)return 'no-frame';var doc=f.contentDocument,win=f.contentWindow;var el=doc.querySelector('.se-title-text .se-text-paragraph')||doc.querySelector('.se-title-text');if(!el)return 'no-el';['mousedown','mouseup','click'].forEach(function(t){try{el.dispatchEvent(new win.MouseEvent(t,{bubbles:true,cancelable:true,view:win}));}catch(e){}});try{win.focus();}catch(e){}try{el.focus();}catch(e){}try{var r=doc.createRange();r.selectNodeContents(el);var s=win.getSelection();s.removeAllRanges();s.addRange(r);}catch(e){}return 'ok';})()"); }catch(e){ _fr='ERR'; }
@@ -4465,7 +4504,7 @@
     try{ if(window.__inj && window.__inj.length) await window.api.saveDebug('inject-debug.txt', window.__inj.join('\n')); }catch(e){}
     // ★임시 — 캐럿 프로브 로그 저장(스크램블 진단용)
     try{ if(window.__caretLog && window.__caretLog.length) await window.api.saveDebug('caret-probe.txt', window.__caretLog.join('\n')); }catch(e){}
-    return {title:t1, images:imgDone};
+    return {title:(post&&post.title)||'', images:imgDone}; // (예전엔 미정의 t1 → 항상 ReferenceError, 호출부가 삼켜서 안 보였다)
   }
 
   // ★구분선 자동삽입 — 현재 커서 위치에 네이버 구분선 삽입 후 "구분선2" 스타일로 변경. (장소 사이 시각 구분)
@@ -4919,6 +4958,72 @@
     try{ await window.api.editorClickAt(nv.getWebContentsId(), loc.x, loc.y); }catch(e){}
     if(await confirmSaved(40)) return 'saved';
     return 'save-unconfirmed';
+  }
+
+  // ★네이버 예약 발행(앱 예약이 아니라 네이버에 등록) — 임시저장 확인 뒤에만 호출. 실제 발행 레이어(2026-10 라이브 확인): #radio_time2(예약), jQuery UI 달력(.ui-datepicker),
+  //   input[class*=input_date], select[class*=hour_option]/[class*=minute_option](분은 10분 단위), 최종 button[class*=confirm_btn]. 표시값이 계획과 같을 때만 최종 [발행]을 누른다.
+  var _NV_SCHEDULE_SET = async function(P){
+ var d=document.getElementById('mainFrame')&&document.getElementById('mainFrame').contentDocument; if(!d) return {err:'no-editor-frame'};
+ var sl=function(ms){return new Promise(function(r){setTimeout(r,ms);});};
+ var vis=function(x){if(!x)return false;var r=x.getBoundingClientRect();return r.width>0&&r.height>0;};
+ var q=function(s){return d.querySelector(s);};
+ var pad=function(n){return (n<10?'0':'')+n;};
+ if(!vis(q('#radio_time2'))){ var pb=[].slice.call(d.querySelectorAll('button[class*=publish_btn]')).filter(vis)[0]; if(!pb) return {err:'no-publish-btn'}; pb.click(); await sl(1200); }
+ var radio=q('#radio_time2'); if(!radio) return {err:'no-reserve-radio'};
+ if(!radio.checked){ (q('label[for=radio_time2]')||radio).click(); await sl(700); }
+ if(!radio.checked) return {err:'reserve-not-checked'};
+ var inp=q('input[class*=input_date]'), hs=q('select[class*=hour_option]'), ms=q('select[class*=minute_option]');
+ if(!inp||!hs||!ms) return {err:'controls-missing'};
+ inp.click(); await sl(500);
+ var dp=q('.ui-datepicker'); if(!dp||dp.style.display==='none') return {err:'calendar-missing'};
+ for(var i=0;i<14;i++){
+  var yy=parseInt(dp.querySelector('.ui-datepicker-year').textContent,10), mo=parseInt(dp.querySelector('.ui-datepicker-month').textContent,10);
+  var diff=(P.y-yy)*12+(P.m-mo); if(diff===0) break;
+  var nb=dp.querySelector(diff>0?'.ui-datepicker-next':'.ui-datepicker-prev'); if(!nb||/disabled/.test(nb.className)) return {err:'month-nav-blocked'};
+  nb.click(); await sl(250);
+ }
+ if(parseInt(dp.querySelector('.ui-datepicker-year').textContent,10)!==P.y||parseInt(dp.querySelector('.ui-datepicker-month').textContent,10)!==P.m) return {err:'month-not-reached'};
+ var cell=[].slice.call(dp.querySelectorAll('td:not(.ui-state-disabled):not(.ui-datepicker-other-month) button')).filter(function(b){return parseInt(b.textContent,10)===P.d;})[0];
+ if(!cell) return {err:'day-unavailable'};
+ cell.click(); await sl(500);
+ var setSel=function(s,v){ var ok=[].slice.call(s.options).some(function(o){return o.value===v;}); if(!ok) return false; s.value=v; s.dispatchEvent(new Event('input',{bubbles:true})); s.dispatchEvent(new Event('change',{bubbles:true})); return true; };
+ if(!setSel(hs,pad(P.hh))) return {err:'hour-unavailable'};
+ if(!setSel(ms,pad(P.mm))) return {err:'minute-unavailable'};
+ await sl(300);
+ var cb=q('button[class*=confirm_btn]'); var cr=cb&&cb.getBoundingClientRect(); var fr=document.getElementById('mainFrame').getBoundingClientRect();
+ return {checked:radio.checked,date:inp.value,hour:hs.value,minute:ms.value,confirm:cr&&cr.width>0?{x:fr.x+cr.x+cr.width/2,y:fr.y+cr.y+cr.height/2}:null};
+};
+  var _NV_SCHEDULE_CANCEL = "(async function(){var d=document.getElementById('mainFrame')&&document.getElementById('mainFrame').contentDocument;if(!d)return false;var sl=function(ms){return new Promise(function(r){setTimeout(r,ms);});};var vis=function(x){if(!x)return false;var r=x.getBoundingClientRect();return r.width>0&&r.height>0;};var l=d.querySelector('label[for=radio_time1]');if(l)l.click();await sl(400);var pb=d.querySelector('button[class*=publish_btn]');if(pb&&vis(d.querySelector('#radio_time1')))pb.click();await sl(500);return true;})()";
+  async function scheduleNaverPublish(plan){
+    var nv=byId('nvweb'); var D=String(plan.date||'').split('-').map(Number), T=String(plan.time||'').split(':').map(Number);
+    if(D.length!==3||T.length!==2||D.some(isNaN)||T.some(isNaN)) return 'schedule-bad-plan';
+    var cancel=async function(){ try{ await nv.executeJavaScript(_NV_SCHEDULE_CANCEL); }catch(e){} };
+    var st=null;
+    try{ st=await nv.executeJavaScript('('+_NV_SCHEDULE_SET+')('+JSON.stringify({y:D[0],m:D[1],d:D[2],hh:T[0],mm:T[1]})+')'); }catch(e){ st=null; }
+    if(!st){ await cancel(); return 'schedule-ui-failed'; }
+    if(st.err){ await cancel(); return 'schedule-'+st.err; }
+    var dn=String(st.date||'').split(/\D+/).filter(Boolean).map(Number);
+    var okDate=dn.length>=3&&dn[0]===D[0]&&dn[1]===D[1]&&dn[2]===D[2];
+    if(!st.checked||!okDate||Number(st.hour)!==T[0]||Number(st.minute)!==T[1]||!st.confirm){ await cancel(); return 'schedule-readback-mismatch'; }
+    // 제출 직전 한 번 더: 시각이 아직 미래인지(검증~제출 사이 경과).
+    if(!window.topicPublishPlan.parsePublishPlan({mode:'reserve',date:plan.date,time:plan.time}).ok){ await cancel(); return 'schedule-expired'; }
+    await window.api.editorClickAt(nv.getWebContentsId(), Math.round(st.confirm.x), Math.round(st.confirm.y));
+    for(var i=0;i<20;i++){
+      await _sleepA(1000); var u=''; try{ u=nv.getURL()||''; }catch(e){}
+      if(/nid\.naver\.com|login/i.test(u)) return 'schedule-login-redirect';
+      if(/^https:\/\/blog\.naver\.com\//i.test(u) && !/GoBlogWrite|Redirect=Write|postwrite/i.test(u)) return 'scheduled';
+    }
+    return 'schedule-unconfirmed';
+  }
+  // ★에디터에 실제로 원고가 들어갔는지(제목·첫/마지막 문단 내용 비교 + 미치환 마커 없음) — 문단 수가 아니라 내용으로 판단.
+  async function verifyEditorPost(post){
+    var frags=window.topicPublishPlan.expectedFragments(post);
+    for(var i=0;i<6;i++){
+      var txt=''; try{ txt=await byId('nvweb').executeJavaScript("(function(){var f=document.getElementById('mainFrame');if(!f||!f.contentDocument)return '';var d=f.contentDocument;var t=d.querySelector('.se-title-text');var b=d.querySelector('.se-content');return ((t&&t.innerText)||'')+' '+((b&&b.innerText)||'');})()"); }catch(e){}
+      if(window.topicPublishPlan.editorHasFragments(txt,frags) && !(await _markersRemain())) return true;
+      await _sleepA(700);
+    }
+    return false;
   }
   async function finishAuto(msg){
     try{ if(typeof closeGenOverlay==='function') closeGenOverlay(); }catch(e){} // ★예약이 일찍 띄운 오버레이가 건너뜀/실패 때 남지 않게 닫는다
