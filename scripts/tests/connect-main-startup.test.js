@@ -18,12 +18,16 @@ test('main app.whenReady startup registers travel IPC without a catalog initiali
   let readyCallback;
   let mainWindow;
   let travelModelCalls = 0;
+  let repairImported = null;
   class FakeWindow extends EventEmitter {
     constructor() {
       super();
       mainWindow = this;
       this.webContents = new EventEmitter();
       this.webContents.id = 1;
+      const mainFrame = { url: 'http://127.0.0.1:47318/app/app.html', parent: null };
+      mainFrame.top = mainFrame;
+      this.webContents.mainFrame = mainFrame;
       this.webContents.send = () => {};
       this.webContents.openDevTools = () => {};
       this.loadURL = () => Promise.resolve();
@@ -65,7 +69,11 @@ test('main app.whenReady startup registers travel IPC without a catalog initiali
   Module._load = function (request, parent, isMain) {
     if (request === 'electron') return electron;
     if (request === '../src/generator/generateSearchPost' && parent && parent.filename.endsWith(path.join('electron', 'main.js'))) {
-      return { ...originalLoad.call(this, request, parent, isMain), generateSearchPost: async () => { travelModelCalls += 1; throw new Error('import unexpectedly invoked the model'); } };
+      return { ...originalLoad.call(this, request, parent, isMain), generateSearchPost: async () => { travelModelCalls += 1; if (repairImported) return { post: null, status: 'hold', holdReasons: ['테스트 작성 중단'] }; throw new Error('import unexpectedly invoked the model'); } };
+    }
+    if (request === '../src/connect/productImport' && parent && parent.filename.endsWith(path.join('electron', 'main.js'))) {
+      const actual = originalLoad.call(this, request, parent, isMain);
+      return { ...actual, createTravelProductImporter: (options) => { const importer = actual.createTravelProductImporter(options); return (input) => repairImported ? Promise.resolve({ ok: true, imported: repairImported }) : importer(input); } };
     }
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -80,10 +88,17 @@ test('main app.whenReady startup registers travel IPC without a catalog initiali
     compiled(mainRequire, mainModule, mainModule.exports, mainPath, path.dirname(mainPath));
     assert.equal(typeof readyCallback, 'function');
     await readyCallback();
-    for (const channel of ['connect:catalog', 'connect:saveProduct', 'connect:prepareKeywords', 'connect:prepareDelivery']) assert.ok(channels.has(channel), channel);
+    for (const channel of ['connect:catalog', 'connect:saveProduct', 'connect:prepareKeywords', 'connect:prepareDelivery', 'connect:importProduct']) assert.ok(channels.has(channel), channel);
 
-    const trustedEvent = { sender: mainWindow.webContents, senderFrame: { isMainFrame: true, url: 'http://127.0.0.1:47318/app/app.html' } };
+    const trustedEvent = { sender: mainWindow.webContents, senderFrame: mainWindow.webContents.mainFrame };
     const untrustedEvent = { sender: { isDestroyed: () => false }, senderFrame: { isMainFrame: true, url: 'http://127.0.0.1:47318/app/app.html' } };
+    const unsafeImport = await channels.get('connect:importProduct')(trustedEvent, { url: 'http://127.0.0.1/private' });
+    assert.equal(unsafeImport.kind, 'private_target', 'documented WebFrameMain mainFrame identity should pass sender validation before URL validation');
+    const deniedSubframe = await channels.get('connect:importProduct')({
+      sender: mainWindow.webContents,
+      senderFrame: { isMainFrame: true, url: trustedEvent.senderFrame.url, parent: trustedEvent.senderFrame, top: trustedEvent.senderFrame },
+    }, { url: 'http://127.0.0.1/private' });
+    assert.equal(deniedSubframe.error, '허용되지 않은 IPC 발신자입니다.');
     const userData = paths.get('userData');
     fs.mkdirSync(userData, { recursive: true });
     fs.writeFileSync(path.join(userData, 'topic-drafts.json'), JSON.stringify({ version: 1, drafts: [{ id: 'travel-draft', topicId: 'travel-connect', status: 'review', result: { connect: {} } }] }));
@@ -112,16 +127,44 @@ test('main app.whenReady startup registers travel IPC without a catalog initiali
     assert.equal(imported.draft.result.post.title, '직접 작성한 여행 원고');
     assert.ok(imported.draft.result.post.blocks.some((block) => block.kind === 'text' && block.text.includes('저자가 직접 작성한 본문')));
     assert.equal(imported.draft.result.connect.productSnapshots[0].id, 'travel-import-p1');
-    assert.ok(imported.draft.holdReasons.some((reason) => reason.includes('예약 가능 여부를 근거로 확인')));
+    assert.ok(imported.draft.holdReasons.some((reason) => reason.includes('발급 링크 확인이 필요')));
     assert.ok(imported.draft.holdReasons.some((reason) => reason.includes('최근 24시간 안의 가격 확인')));
     assert.equal(imported.draft.result.post.blocks.some((block) => block.kind === 'link'), false);
     assert.equal(imported.draft.result.post.blocks.some((block) => block.kind === 'text' && block.text.includes('제휴')) , false);
+    assert.equal(travelModelCalls, 0);
+
+    const beforeAttempt = JSON.parse(fs.readFileSync(path.join(userData, 'topic-drafts.json'), 'utf8')).drafts.length;
+    const notCreated = await channels.get('generate:topic')(trustedEvent, {
+      topicId: 'travel-connect', profileKey: 'travel-a', keyword: '제주 패키지', productIds: ['travel-import-p1'], variantIds: ['travel-import-v1'], travelTopic: 'domestictravel',
+    });
+    assert.equal(notCreated.post, null);
+    assert.equal(notCreated.stage, 'prepare');
+    assert.equal(notCreated.draftSaved, false);
+    assert.equal(notCreated.draft, undefined);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'topic-drafts.json'), 'utf8')).drafts.length, beforeAttempt);
     assert.equal(travelModelCalls, 0);
 
     const batch = channels.get('topicDrafts:generate')(trustedEvent, { topicId: 'travel-connect', profileKey: 'travel-a', keywords: '다낭', productIds: ['p1'], variantIds: [] });
     const deniedCancel = await channels.get('topicDrafts:cancel')(untrustedEvent);
     assert.equal(deniedCancel.ok, false);
     await batch;
+
+    // Full main IPC path: legacy stored product -> issued-link repair -> writer.
+    const { extractTravelProduct } = require('../../src/connect/productImport');
+    const { buildAutoImportSave } = require('../../src/connect/autoPipeline');
+    const detailUrl = 'https://pkgtour.naver.com/products/ybtour/JCP40960000-20261101';
+    repairImported = extractTravelProduct({ html: fs.readFileSync(path.join(__dirname, 'fixtures/travel-product-import/naver-ybtour-product.html'), 'utf8'), url: detailUrl, collectedAt: new Date().toISOString() });
+    repairImported.resolution = { issuedUrl: 'https://naver.me/GdTuMXPg', finalUrl: detailUrl, chain: ['https://naver.me/GdTuMXPg', 'https://brandconnect.naver.com/connect/issued', detailUrl] };
+    const built = buildAutoImportSave({ imported: repairImported, catalog: { products: [], sources: [] } });
+    const legacy = normalizeConnectProduct({ ...built.product, eligibility: 'unknown', facts: built.product.facts.filter((fact) => fact.field !== 'eligibility') }, { sources: built.sources });
+    writeConnectCatalog(path.join(userData, 'connect/catalog.json'), { version: 1, products: [legacy], sources: built.sources });
+    const beforeRepairAttempt = JSON.parse(fs.readFileSync(path.join(userData, 'topic-drafts.json'), 'utf8')).drafts.length;
+    const repairedRequest = await channels.get('generate:topic')(trustedEvent, { topicId: 'travel-connect', profileKey: 'travel-a', keyword: '부산 대마도 1박2일', productIds: [legacy.id], variantIds: [legacy.variants[0].id], travelTopic: 'worldtravel' });
+    assert.equal(travelModelCalls, 1, 'the repaired registration must pass preflight and reach the injected writer');
+    assert.equal(repairedRequest.stage, 'write');
+    assert.equal(repairedRequest.draftSaved, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'connect/catalog.json'), 'utf8')).products[0].eligibility, 'verified');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'topic-drafts.json'), 'utf8')).drafts.length, beforeRepairAttempt);
   } finally {
     Module._load = originalLoad;
     global.setInterval = originalSetInterval;

@@ -6,6 +6,7 @@ const {
   writeConnectCatalog,
 } = require('./products');
 const { matchConnectKeywords } = require('./keywords');
+const { validateTravelProductUrl } = require('./productImport');
 
 const hasOnly = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).every((key) => keys.includes(key));
@@ -17,12 +18,33 @@ function validateConnectRequest(channel, input) {
   const schemas = {
     'connect:catalog': [],
     'connect:saveProduct': ['product', 'sources'],
+    'connect:importProduct': ['url'],
+    'connect:autoImport': ['url'],
+    'connect:refreshProduct': ['productId'],
     'connect:prepareKeywords': ['seed', 'productIds', 'questions', 'importXlsx'],
     'connect:prepareDelivery': ['id'],
   };
   const allowed = schemas[channel];
   if (!allowed || !hasOnly(input, allowed)) return { ok: false, error: '허용되지 않은 요청 필드가 있습니다.' };
   if (channel === 'connect:catalog') return { ok: true };
+  if (channel === 'connect:importProduct') {
+    if (!isText(input.url, 4000)) return { ok: false, error: '상품 URL 형식이 올바르지 않습니다.', kind: 'invalid_url' };
+    const checked = validateTravelProductUrl(input.url);
+    if (!checked.valid) return { ok: false, error: checked.error, kind: checked.kind };
+    return { ok: true };
+  }
+  if (channel === 'connect:autoImport') {
+    if (!isText(input.url, 4000)) return { ok: false, error: '상품 URL 형식이 올바르지 않습니다.', kind: 'invalid_url' };
+    const checked = validateTravelProductUrl(input.url);
+    if (!checked.valid) return { ok: false, error: checked.error, kind: checked.kind };
+    return { ok: true };
+  }
+  if (channel === 'connect:refreshProduct') {
+    if (typeof input.productId !== 'string' || !input.productId.trim() || input.productId.length > 80) {
+      return { ok: false, error: '상품 id가 올바르지 않습니다.' };
+    }
+    return { ok: true };
+  }
   if (channel === 'connect:saveProduct') {
     const productKeys = ['id', 'connectKind', 'name', 'provider', 'detailUrl', 'affiliateUrlRaw', 'profileKey', 'eligibility', 'variants', 'facts', 'travelDetails', 'shoppingDetails', 'images'];
     if (!hasOnly(input.product, productKeys)) return { ok: false, error: '상품 입력에 허용되지 않은 필드가 있습니다.' };
@@ -74,6 +96,9 @@ function createConnectIpcHandlers({ ipcMain, isTrustedSender, service }) {
   const methods = {
     'connect:catalog': 'catalog',
     'connect:saveProduct': 'saveProduct',
+    'connect:importProduct': 'importProduct',
+    'connect:autoImport': 'autoImport',
+    'connect:refreshProduct': 'refreshProduct',
     'connect:prepareKeywords': 'prepareKeywords',
     'connect:prepareDelivery': 'prepareDelivery',
   };
@@ -86,12 +111,14 @@ async function dispatchConnectIpc(channel, event, input, { isTrustedSender, serv
   if (!isTrustedSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
   const checked = validateConnectRequest(channel, input);
   if (!checked.ok) return checked;
-  const method = { 'connect:catalog': 'catalog', 'connect:saveProduct': 'saveProduct', 'connect:prepareKeywords': 'prepareKeywords', 'connect:prepareDelivery': 'prepareDelivery' }[channel];
+  const method = { 'connect:catalog': 'catalog', 'connect:saveProduct': 'saveProduct', 'connect:importProduct': 'importProduct', 'connect:autoImport': 'autoImport', 'connect:refreshProduct': 'refreshProduct', 'connect:prepareKeywords': 'prepareKeywords', 'connect:prepareDelivery': 'prepareDelivery' }[channel];
   try {
     if (!method || typeof service[method] !== 'function') throw new Error('기능을 사용할 수 없습니다.');
     return await service[method](input);
   } catch (error) {
-    return { ok: false, error: error && error.message ? error.message : '여행 연결 요청을 처리하지 못했습니다.' };
+    const result = { ok: false, error: error && error.message ? error.message : '여행 연결 요청을 처리하지 못했습니다.' };
+    if (error && error.kind) result.kind = error.kind;
+    return result;
   }
 }
 
@@ -103,6 +130,8 @@ function createConnectService({
   readWorkbook,
   autocomplete = async () => [],
   observe = async () => [],
+  productImporter = async () => ({ ok: false, error: '상품 가져오기를 사용할 수 없습니다.', kind: 'unavailable' }),
+  autoImport = async () => ({ ok: false, error: '자동 진행을 사용할 수 없습니다.', kind: 'unavailable' }),
   prepareDelivery = async () => ({ ok: false, error: '에디터 준비를 사용할 수 없습니다.' }),
   now = () => new Date(),
 } = {}) {
@@ -119,6 +148,16 @@ function createConnectService({
       const products = current.products.filter((item) => item.id !== product.id).concat(product);
       writeCatalog(catalogFile, { version: 1, products, sources });
       return { ok: true, product, products, sources };
+    },
+    async importProduct(input) { return productImporter(input); },
+    async autoImport(input) { return autoImport(input); },
+    async refreshProduct({ productId }) {
+      const current = catalog();
+      const product = current.products.find((item) => item.id === productId);
+      if (!product || !product.affiliateUrlRaw) {
+        return { ok: false, error: '발급된 제휴 링크가 있는 상품을 찾지 못했습니다.', kind: 'not_found' };
+      }
+      return autoImport({ url: product.affiliateUrlRaw });
     },
     async prepareKeywords(input) {
       const current = catalog();

@@ -207,7 +207,7 @@ function checkConnectPost(post, { connectContext, currentProducts, now = Date.no
     const selectedIds = new Set((snapshot.variants || []).map((v) => v.id));
     const currentProjection = substantiveProduct(current, selectedIds);
     if (stable(currentProjection) !== stable(substantiveProduct(snapshot, selectedIds))) addReason(holdReasons, `등록 상품 또는 선택 옵션이 저장 시점과 달라졌습니다: ${snapshot.name || snapshot.id}`);
-    if (current.eligibility !== 'verified') addReason(holdReasons, `상품 예약 가능 여부가 확인되지 않았습니다: ${current.name || current.id}`);
+    if (current.eligibility !== 'verified') addReason(holdReasons, '발급 링크 확인이 필요합니다. 상품 링크 입력란에서 다시 확인해 주세요.');
     if (current.affiliateStatus !== 'issued' || !current.affiliateUrlRaw || !validateAffiliateUrl(current.affiliateUrlRaw).valid) addReason(holdReasons, `발급된 제휴 링크가 없습니다: ${current.name || current.id}`);
     for (const variant of snapshot.variants || []) {
       const currentVariant = (current.variants || []).find((v) => v.id === variant.id);

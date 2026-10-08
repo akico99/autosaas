@@ -60,6 +60,11 @@ const { buildKeywordStrategy, homefeedGuidance } = require('../src/topics/keywor
 const { readConnectCatalog, writeConnectCatalog, buildConnectContext } = require('../src/connect/products');
 const { checkConnectPost } = require('../src/connect/check');
 const { createConnectService, buildTravelImportRequest, dispatchConnectIpc } = require('../src/connect/service');
+const { createTravelProductImporter } = require('../src/connect/productImport');
+const { buildAutoImportSave, deriveSeedKeywords } = require('../src/connect/autoPipeline');
+const { prepareTravelGeneration } = require('../src/connect/prepareGeneration');
+const { createShortlinkResolver } = require('./shortlinkResolver');
+const { isTrustedConnectSender: validateTrustedConnectSender } = require('./trustedConnectSender');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -1467,19 +1472,37 @@ app.whenReady().then(async () => {
   };
 
   const isTrustedConnectSender = (event) => {
-    try {
-      if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
-      if (!event.senderFrame || !event.senderFrame.isMainFrame) return false;
-      const url = new URL(event.senderFrame.url);
-      return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Number(url.port) === APP_PORT && url.pathname === '/app/app.html';
-    } catch (_) { return false; }
+    return validateTrustedConnectSender(event, { mainWindow, appPort: APP_PORT });
   };
   const connectCatalogFile = () => path.join(topicUserData(), 'connect', 'catalog.json');
   const readTravelCatalog = () => readConnectCatalog(connectCatalogFile());
+  const travelProductImporter = createTravelProductImporter({ resolveUrl: createShortlinkResolver({ BrowserWindow, session }) });
+  // 발급 링크 자동 진행: 수집 → 자동 파이프라인 검토 → connect:saveProduct와 같은 저장 경로 → 씨앗 키워드.
+  async function autoImportTravelProduct({ url }) {
+    const collected = await travelProductImporter({ url });
+    if (!collected || !collected.ok) {
+      const kind = collected && collected.kind;
+      const stage = ['shortlink_unsupported', 'redirect'].includes(kind) ? 'resolve' : 'collect';
+      return { ok: false, error: (collected && collected.error) || '상품 페이지를 가져오지 못했습니다.', kind, stage };
+    }
+    const catalog = readTravelCatalog();
+    const built = buildAutoImportSave({ imported: collected.imported, catalog, now: () => new Date() });
+    if (!built.ok) return { ok: false, error: built.error, kind: built.kind, stage: 'save' };
+    let saved;
+    try {
+      saved = connectService.saveProduct({ product: built.product, sources: built.sources });
+    } catch (error) {
+      return { ok: false, error: error && error.message ? error.message : '상품을 저장하지 못했습니다.', kind: 'save_failed', stage: 'save' };
+    }
+    const seeds = deriveSeedKeywords(saved.product);
+    return { ok: true, product: saved.product, variantIds: built.variantIds, seeds, warnings: (collected.imported && collected.imported.warnings) || [] };
+  }
   const connectService = createConnectService({
     catalogFile: connectCatalogFile(),
     readCatalog: readConnectCatalog,
     writeCatalog: writeConnectCatalog,
+    productImporter: travelProductImporter,
+    autoImport: autoImportTravelProduct,
     selectWorkbook: async () => {
       const picked = await dialog.showOpenDialog(mainWindow, { title: '네이버 검색광고 키워드 XLSX 선택', defaultPath: app.getPath('downloads'), properties: ['openFile'], filters: [{ name: 'Excel 통합 문서', extensions: ['xlsx'] }] });
       return picked.canceled || !picked.filePaths[0] ? { canceled: true } : { canceled: false, filePath: picked.filePaths[0] };
@@ -1525,6 +1548,9 @@ app.whenReady().then(async () => {
     },
   });
   ipcMain.handle('connect:catalog', (event, input = {}) => dispatchConnectIpc('connect:catalog', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:importProduct', (event, input = {}) => dispatchConnectIpc('connect:importProduct', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:autoImport', (event, input = {}) => dispatchConnectIpc('connect:autoImport', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+  ipcMain.handle('connect:refreshProduct', (event, input = {}) => dispatchConnectIpc('connect:refreshProduct', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
   ipcMain.handle('connect:saveProduct', (event, input = {}) => dispatchConnectIpc('connect:saveProduct', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
   ipcMain.handle('connect:prepareKeywords', (event, input = {}) => dispatchConnectIpc('connect:prepareKeywords', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
   ipcMain.handle('connect:prepareDelivery', (event, input = {}) => dispatchConnectIpc('connect:prepareDelivery', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
@@ -1541,8 +1567,9 @@ app.whenReady().then(async () => {
         || (request.experience !== undefined && (typeof request.experience !== 'string' || request.experience.length > 2000))
         || (request.travelTopic !== undefined && !['domestictravel', 'worldtravel'].includes(request.travelTopic))) return { ok: false, error: '여행 원고 요청 형식이 올바르지 않습니다.' };
       const result = await runTopicGeneration(request);
+      if (!result.post) return { ...result, stage: result.stage || 'write', draftSaved: false };
       const draft = saveDraftFromResult(request, result, 'ai');
-      return { ...result, draft: draftView(draft), draftId: draft.id };
+      return { ...result, stage: 'saved', draftSaved: true, draft: draftView(draft), draftId: draft.id };
     }
     return runTopicGeneration(request);
   });
@@ -1553,7 +1580,7 @@ app.whenReady().then(async () => {
     for (const snapshot of connectContext.productSnapshots) {
       const current = catalog.products.find((product) => product.id === snapshot.id);
       if (!current || current.connectKind !== 'travel') { holds.push('선택 상품이 등록된 여행 상품이 아닙니다.'); continue; }
-      if (current.eligibility !== 'verified') holds.push(`${current.name}: 예약 가능 여부를 근거로 확인해야 합니다.`);
+      if (current.eligibility !== 'verified') holds.push('발급 링크 확인이 필요합니다. 상품 링크 입력란에서 다시 확인해 주세요.');
       if (current.affiliateStatus !== 'issued' || !current.affiliateUrlRaw) holds.push(`${current.name}: 발급된 제휴 링크를 등록해야 합니다.`);
       if (!snapshot.variants.length) holds.push(`${current.name}: 글에 사용할 옵션을 선택해 주세요.`);
       for (const variant of snapshot.variants) {
@@ -1580,18 +1607,23 @@ app.whenReady().then(async () => {
       const profileData = readTopicProfiles(path.join(topicUserData(), 'topic-profiles.json'));
       const profile = profileData.profiles.find((item) => item.key === request.profileKey && item.topicId === 'travel-connect');
       if (!profile) throw new Error('여행 프로필을 선택해 주세요.');
-      const catalog = readTravelCatalog();
+      let catalog = readTravelCatalog();
       let connectContext = savedConnectContext;
       let preflightHolds = [];
       if (!connectContext) {
         const ids = Array.isArray(request.productIds) ? [...new Set(request.productIds)] : [];
+        if (!importedPost) {
+          const prepared = await prepareTravelGeneration({ catalog, productIds: ids, variantIds: request.variantIds || [], refreshProduct: (input) => connectService.refreshProduct(input), readCatalog: readTravelCatalog });
+          if (!prepared.ok) return { ok: true, post: null, status: 'hold', stage: 'prepare', holdReasons: [prepared.error], reviewReasons: [] };
+          catalog = prepared.catalog;
+        }
         const selected = catalog.products.filter((product) => ids.includes(product.id));
         if (!ids.length || selected.length !== ids.length || selected.some((product) => product.connectKind !== 'travel')) throw new Error('등록된 여행 상품만 선택할 수 있습니다.');
         connectContext = buildConnectContext({ products: selected, variantIds: request.variantIds, sources: catalog.sources, experience: request.experience || '' });
         preflightHolds = travelCostGate(connectContext, catalog);
         // Imported text never reaches the model. Keep the authored post and its product snapshot
         // so the normal checker can save a held draft even before registration is complete.
-        if (preflightHolds.length && !importedPost) return { ok: true, post: null, status: 'hold', holdReasons: preflightHolds, reviewReasons: [], connect: connectContext, topic: { profileKey: profile.key } };
+        if (preflightHolds.length && !importedPost) return { ok: true, post: null, status: 'hold', stage: 'prepare', holdReasons: preflightHolds, reviewReasons: [], connect: connectContext, topic: { profileKey: profile.key } };
       }
       if (connectContext.connectKind !== 'travel' || !Array.isArray(connectContext.productIds) || !Array.isArray(connectContext.variantIds)) throw new Error('저장된 여행 상품 맥락이 올바르지 않습니다.');
       const currentProducts = catalog.products.filter((product) => connectContext.productIds.includes(product.id));
@@ -1692,6 +1724,12 @@ app.whenReady().then(async () => {
         const single = { topicId: request.topicId || 'saju', profileKey: request.profileKey, keyword, purpose: request.purpose, productKey: request.productKey || '', ...(request.topicId === 'travel-connect' ? { productIds: request.productIds, variantIds: request.variantIds, experience: request.experience, travelTopic: request.travelTopic } : {}), opts: { auto: true } };
         const result = await runTopicGeneration(single);
         if (result.skipped) { summary.skipped += 1; send({ index, total: keywords.length, keyword, phase: 'skipped', reasons: result.holdReasons || [] }); continue; }
+        if (single.topicId === 'travel-connect' && !result.post) {
+          if (result.ok) summary.held += 1; else summary.failed += 1;
+          send({ index, total: keywords.length, keyword, phase: 'not-created', status: 'hold', reasons: result.holdReasons || [result.error || '원고를 작성하지 못했습니다.'] });
+          if (isSearchBlocked()) { summary.stopped = 'search-blocked'; break; }
+          continue;
+        }
         const draft = saveDraftFromResult(single, result, 'ai');
         if (!result.ok) summary.failed += 1; else if (draft.status === 'hold') summary.held += 1; else summary.made += 1;
         send({ index, total: keywords.length, keyword, phase: 'done', status: draft.status, id: draft.id });

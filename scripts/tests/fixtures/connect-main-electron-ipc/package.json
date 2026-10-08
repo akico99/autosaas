@@ -1,0 +1,6 @@
+{
+  "name": "connect-main-electron-ipc-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js"
+}

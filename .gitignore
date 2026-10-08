@@ -2,6 +2,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+# 개발 도구의 임시 화면 검증 자료
+.superpowers/
 # 로컬 세션·자격증명은 userData(앱 데이터 폴더)에만 — 저장소에 두지 않음
 *cookies*.json
 *auth*.json
