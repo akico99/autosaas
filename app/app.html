@@ -295,7 +295,7 @@
       <div class="topic-nav" id="topic-nav">
         <button type="button" id="topic-saju-tab" class="on">사주보는 수달</button>
         <button type="button" id="topic-muju-tab" disabled title="준비 중">무주스키샵 (준비 중)</button>
-        <button type="button" id="topic-travel-tab" aria-controls="travel-connect-pane">여행 상품 정보</button>
+        <button type="button" id="topic-travel-tab" aria-controls="travel-connect-pane">커넥트 링크 원고</button>
         <button type="button" id="topic-legacy-tab">구버전 ▾</button>
       </div>
       <div class="topic-pane" id="topic-saju-pane">
@@ -1174,6 +1174,35 @@
             },finishGen:finishGen
           });
           if(!(await verifyEditorPost(result.post))) throw new Error('에디터에서 원고 입력을 확인하지 못했습니다. 직접 확인해 주세요.');
+        }finally{
+          window._travelConnectBusy=false;
+          window._topicStatusEl=null;
+          topicLock.release();
+        }
+      }
+    };
+    window._quickConnectHooks={
+      isBusy:function(){ return !!window._travelConnectBusy || topicLock.busy(); },
+      deliver:async function({post,assets,keyword,kind}){
+        if(window._travelConnectBusy||!topicLock.tryAcquire()) throw new Error('다른 에디터 작업이 진행 중입니다.');
+        window._travelConnectBusy=true;
+        window._topicStatusEl=byId('tc-quick-status');
+        try{
+          var result=await window.topicPublishPlan.deliverToEditor({plan:{mode:'draft'}},{
+            prepare:function(){ return prepareTopicEditor(); },
+            inject:function(){
+              return window.topicEditorDelivery.injectTopicPost({
+                post:post,assets:assets||[],purpose:'search',keyword:keyword,connectKind:kind,
+                setPhotos:function(files){window._myPhotos=files;window._placePhotos=null;window._genType='travel-connect';},
+                setImageMode:function(){var segment=document.querySelector('#img-s');if(segment){segment.querySelectorAll('.s').forEach(function(x){x.classList.remove('on');});var mine=segment.querySelector('[data-img="mine"]');if(mine)mine.classList.add('on');}},
+                finishGen:finishGen
+              });
+            },
+            verify:function(){ return verifyEditorPost(post); },
+            save:function(){ return saveNaverDraft(); }
+          });
+          if(!result.ok) throw new Error((STAGE_LABEL[result.stage]||result.stage)+(result.detail?' ('+result.detail+')':''));
+          return '네이버 임시저장 완료 — 검토 후 발행하세요';
         }finally{
           window._travelConnectBusy=false;
           window._topicStatusEl=null;
@@ -4355,6 +4384,9 @@
       if(window._reviewDiscType) return; // 리뷰형 = disc-type 기반으로 이미 처리됨
       var _cl = Array.isArray(opts.coupangLinks) ? opts.coupangLinks : [];
       var disc = _affiliateDisclosure(_cl);
+      // Quick Connect posts already carry the exact disclosure in their first block.
+      // Keep it once; legacy and saju posts retain the existing prepend behavior.
+      if(disc && opts.connectKind && blocks.some(function(block){return block&&(block.kind==='text'||block.kind==='notice')&&String(block.text||'').replace(/\s+/g,' ').trim().indexOf(disc)>=0;})) return;
       if(disc) blocks.unshift({ kind:'notice', text:disc });
     })();
     let poolIdx = 0, imgDone = 0, firstText = true, headingCount = 0;

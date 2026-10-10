@@ -52,6 +52,7 @@ test('the inline travel profile form replaces the unsupported prompt() dialog an
     await page.waitForSelector('#topic-travel-tab', { timeout: 10000 });
     await page.locator('#topic-travel-tab').click({ timeout: 10000 });
     await page.waitForFunction(() => { const e = document.getElementById('tc-pane'); return e && getComputedStyle(e).display !== 'none'; }, { timeout: 10000 });
+    await page.locator('#tc-advanced').evaluate((el) => { el.open = true; });
 
     // 실제 서버(electron/main.js)의 topicProfiles:save는 다른 주제(사주)의 프로필을 함께
     // 반환한다. 공유 fixture를 건드리지 않고 이 특정 응답 형태만 재현한다.

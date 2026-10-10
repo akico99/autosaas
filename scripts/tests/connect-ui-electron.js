@@ -40,6 +40,16 @@ async function main(){
     await page.waitForSelector('#topic-travel-tab');
     await page.locator('#topic-travel-tab').click();
     await page.waitForFunction(()=>{const e=document.getElementById('tc-pane');return e&&getComputedStyle(e).display!=='none';});
+    await page.waitForSelector('#tc-quick-card');
+    assert.equal(await page.locator('#tc-advanced').evaluate(el=>el.open),false,'detailed registration starts collapsed');
+    assert.equal(await page.locator('#tc-quick-save').isChecked(),true,'quick flow saves to Naver by default');
+    await page.locator('#tc-quick-url').fill('https://naver.me/fixture');await page.locator('#tc-quick-analyze').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#tc-quick-keywords .tc-quick-keyword').length===3);
+    await page.locator('#tc-quick-keywords .tc-quick-keyword').first().click();
+    await page.waitForFunction(()=>window.fixtureCalls.quickGenerate===1&&window.fixtureCalls.quickDeliver===1&&window.fixtureCalls.quickMark===1);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.quickMarkDraftId),'quick-draft-1','the saved draft id is passed through the preload bridge');
+    assert.match(await page.locator('#tc-quick-status').innerText(),/네이버 임시저장 완료/,'quick flow reports the confirmed save');
+    await page.locator('#tc-advanced').evaluate(el=>{el.open=true;});
     await page.waitForSelector('.tc-product');
     // Match the live app's constrained flex layout, rather than a full-height standalone panel.
     const appWindow=await electronApp.browserWindow(page);

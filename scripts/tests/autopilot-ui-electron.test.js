@@ -52,6 +52,7 @@ async function withAutopilotPage(run) {
     await page.waitForSelector('#topic-travel-tab', { timeout: 10000 });
     await page.locator('#topic-travel-tab').click({ timeout: 10000 });
     await page.waitForFunction(() => { const e = document.getElementById('tc-pane'); return e && getComputedStyle(e).display !== 'none'; }, { timeout: 10000 });
+    await page.locator('#tc-advanced').evaluate((el) => { el.open = true; });
     await page.waitForSelector('#tc-autopilot', { timeout: 10000 });
     await run(page, pageErrors);
     assert.deepEqual(pageErrors, []);
