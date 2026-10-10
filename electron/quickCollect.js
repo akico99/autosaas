@@ -65,11 +65,43 @@ function extensionFor(url, contentType) {
   try { const ext = path.extname(new URL(url).pathname).toLowerCase(); return ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext) ? (ext === '.jpeg' ? '.jpg' : ext) : '.jpg'; } catch (_) { return '.jpg'; }
 }
 
-function createQuickCollector({ scrapeRendered, nativeImage, userDataPath, partition = 'persist:naver', userAgent = '' } = {}) {
-  if (typeof scrapeRendered !== 'function') throw new TypeError('scrapeRendered 함수가 필요합니다.');
+const READY_SCRIPT = "(function(){var t=((document.body&&document.body.innerText)||'').trim();return t.length;})()";
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 상품 페이지(pkgtour·스마트스토어)는 데이터를 계속 불러와 '로드 완료' 신호가 늦거나 오지 않는다.
+// 로드 완료를 기다리지 않고 본문 글자 수가 충분하고 안정될 때까지 직접 확인한 뒤 추출한다.
+function createPageRenderer({ BrowserWindow, partition, userAgent, maxWaitMs = 30000 }) {
+  return async function renderAndExtract(url, extractScript) {
+    const win = new BrowserWindow({ show: false, width: 1280, height: 1600, webPreferences: { partition, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
+    try {
+      win.webContents.setAudioMuted && win.webContents.setAudioMuted(true);
+      win.loadURL(url, userAgent ? { userAgent } : undefined).catch(() => {});
+      const deadline = Date.now() + maxWaitMs;
+      let last = -1; let stable = 0;
+      while (Date.now() < deadline) {
+        await sleep(800);
+        let length = 0;
+        try { length = Number(await win.webContents.executeJavaScript(READY_SCRIPT)) || 0; } catch (_) { continue; }
+        if (length >= 300 && Math.abs(length - last) < 50) stable += 1; else stable = 0;
+        last = length;
+        if (stable >= 2) break;
+      }
+      // 지연 로딩 사진을 띄우기 위해 끝까지 천천히 내렸다가 다시 올린다.
+      try { await win.webContents.executeJavaScript("(async function(){var h=document.body.scrollHeight;for(var y=0;y<h;y+=900){window.scrollTo(0,y);await new Promise(function(r){setTimeout(r,150)});}window.scrollTo(0,0);return true;})()"); } catch (_) {}
+      await sleep(1200);
+      return await win.webContents.executeJavaScript(extractScript);
+    } finally {
+      try { win.destroy(); } catch (_) {}
+    }
+  };
+}
+
+function createQuickCollector({ scrapeRendered, BrowserWindow, nativeImage, userDataPath, partition = 'persist:naver', userAgent = '' } = {}) {
+  const renderPage = typeof BrowserWindow === 'function' ? createPageRenderer({ BrowserWindow, partition, userAgent }) : null;
+  if (!renderPage && typeof scrapeRendered !== 'function') throw new TypeError('BrowserWindow 또는 scrapeRendered 함수가 필요합니다.');
   return async function collectQuickProduct(finalUrl, id) {
     const target = validateHttpsUrl(finalUrl);
-    const rendered = await scrapeRendered(target.href, EXTRACTION_SCRIPT, 16000, partition, userAgent, {
+    const rendered = renderPage ? await renderPage(target.href, EXTRACTION_SCRIPT) : await scrapeRendered(target.href, EXTRACTION_SCRIPT, 16000, partition, userAgent, {
       timeoutMs: 18000,
       navigationTimeoutMs: 30000,
       readyScript: "JSON.stringify((function(){return ((document.body&&document.body.innerText)||'').trim().length>=200})())",
@@ -88,7 +120,7 @@ function createQuickCollector({ scrapeRendered, nativeImage, userDataPath, parti
         if (response.buffer.length <= 15 * 1024) continue;
         const image = nativeImage && nativeImage.createFromBuffer(response.buffer);
         if (!image || image.isEmpty()) continue;
-        const { width, height } = image.getSize(); if (width < 400 || height < 200) continue;
+        const { width, height } = image.getSize(); if (width < 400 || height < 200 || height > width * 2.2) continue;
         let ext = extensionFor(candidate.url, response.contentType); let buffer = response.buffer;
         if (ext === '.webp' || ext === '.gif') { ext = '.jpg'; buffer = image.toJPEG(92); }
         if (!['.jpg', '.png'].includes(ext)) { ext = '.jpg'; buffer = image.toJPEG(92); }

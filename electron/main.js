@@ -1559,7 +1559,7 @@ app.whenReady().then(async () => {
 
   // 새 간편 링크 글쓰기 경로: 엄격한 Connect 검수/카탈로그와 분리해 페이지 정보로 바로 작성한다.
   const quickAnalyses = new Map();
-  const quickCollector = createQuickCollector({ scrapeRendered, nativeImage, userDataPath: app.getPath('userData'), partition: 'persist:naver', userAgent: _DESKTOP_UA_OF });
+  const quickCollector = createQuickCollector({ scrapeRendered, BrowserWindow, nativeImage, userDataPath: app.getPath('userData'), partition: 'persist:naver', userAgent: _DESKTOP_UA_OF });
   const quickAnalysisError = (error, stage) => ({ ok: false, error: error && error.message || '상품 페이지를 분석하지 못했습니다.', stage: error && error.stage || stage });
   ipcMain.handle('quick:analyze', async (event, request = {}) => {
     let stage = 'resolve';

@@ -9,7 +9,7 @@ const quickPost = require('../src/connect/quickPost');
 const { runClaude } = require('../src/generator/runClaude');
 const fs = require('node:fs');
 const path = require('node:path');
-const resultFile = path.join(app.getPath('temp'), 'blog-auto-quick-analyze-live.json');
+const resultFile = path.join(__dirname, '..', '.superpowers', 'quick-analyze-live.json');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 app.whenReady().then(async () => {
@@ -23,7 +23,7 @@ app.whenReady().then(async () => {
       finalUrl = resolved.finalUrl;
     }
     const id = `live-${Date.now()}`;
-    const collect = createQuickCollector({ scrapeRendered: createRenderedCollector({ BrowserWindow }), nativeImage,
+    const collect = createQuickCollector({ BrowserWindow, nativeImage,
       userDataPath: app.getPath('userData'), partition: 'persist:quick-collect', userAgent: UA });
     const { product, images } = await collect(finalUrl, id);
     let keywords;
