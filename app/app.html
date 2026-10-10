@@ -1187,6 +1187,8 @@
         if(window._travelConnectBusy||!topicLock.tryAcquire()) throw new Error('다른 에디터 작업이 진행 중입니다.');
         window._travelConnectBusy=true;
         window._topicStatusEl=byId('tc-quick-status');
+        // ★모바일 가독성 기본값 — 빠른 원고는 가운데 정렬로 넣고, 끝나면 사용자의 정렬 설정을 되돌린다.
+        var _prevAlign=window._align; window._align='center';
         try{
           var result=await window.topicPublishPlan.deliverToEditor({plan:{mode:'draft'}},{
             prepare:function(){ return prepareTopicEditor(); },
@@ -1204,6 +1206,7 @@
           if(!result.ok) throw new Error((STAGE_LABEL[result.stage]||result.stage)+(result.detail?' ('+result.detail+')':''));
           return '네이버 임시저장 완료 — 검토 후 발행하세요';
         }finally{
+          window._align=_prevAlign;
           window._travelConnectBusy=false;
           window._topicStatusEl=null;
           topicLock.release();
@@ -4454,7 +4457,7 @@
         var _pi2 = blocks.find(function(x){return x&&x._placeInfo;});
         var _anc2 = _pi2 ? (String(_pi2.text||'').split('\n').map(function(l){return l.trim();}).filter(Boolean).pop()||'') : '';
         endMaps.push({ place:(b.place||'').trim(), candidates:_cands, anchorAfter:_anc2 });
-      } else if(b.kind==='link' && _coupangUrl(b)){
+      } else if(b.kind==='link' && !b.inline && _coupangUrl(b)){
         // ★카드는 "맨 마지막에 문서 끝"에 넣는다(지도 endMaps와 동일). 중간에 붙여넣으면 네이버가 카드를 안 만들고, 에디터도 깨져 뒤 작업이 실패함.
         endCards.push({ url:_coupangUrl(b) });
       } else if(b.kind==='table'){

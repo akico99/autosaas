@@ -61,3 +61,56 @@ test('kind detection distinguishes travel Naver pages from shopping', () => {
   assert.equal(quickPost.detectKind('https://www.naver.com/travel/hotels/123'), 'travel');
   assert.equal(quickPost.detectKind('https://smartstore.naver.com/shop/products/123'), 'shopping');
 });
+
+test('mobile formatting wraps lines near 20 chars, keeps paragraphs short, and highlights marked text', () => {
+  const blocks = quickPost.formatTextBlocks('부산에서 출발해 1박 2일 동안 대마도 이즈하라를 둘러보는 일정입니다. ==온천욕과 BBQ 특식이 포함돼 있어 따로 챙길 비용이 적습니다.== 출발 확정 상품이라 일정이 취소될 걱정도 덜 수 있습니다. 가격은 작성 시점 기준입니다.');
+  assert.ok(blocks.length >= 2);
+  for (const block of blocks) {
+    const lines = block.text.split('\n');
+    assert.ok(lines.length <= quickPost.LAYOUT.maxParagraphLines);
+    assert.ok(lines.every((line) => line.length <= quickPost.LAYOUT.lineChars || !line.includes(' ')), lines.join('|'));
+    assert.ok(!block.text.includes('=='));
+  }
+  const html = blocks.map((block) => block.html).join('');
+  assert.match(html, /background-color:#fff5b1/);
+  assert.equal((html.match(/<span/g) || []).length, (html.match(/<\/span>/g) || []).length);
+});
+
+test('title always carries a number, preferring the page price', () => {
+  assert.equal(quickPost.ensureTitleNumber('대마도 여행 1박 2일 정리', '229,000 원', 4), '대마도 여행 1박 2일 정리');
+  assert.match(quickPost.ensureTitleNumber('대마도 온천 여행 정리', '229,000 원', 4), /229,000원/);
+  assert.match(quickPost.ensureTitleNumber('이어폰 고르는 법', '', 5), /핵심 5가지/);
+});
+
+test('selling layout: hook, summary box, three button links, image captions, plain headings', () => {
+  const issuedUrl = 'https://naver.me/Test';
+  const generated = { title: '대마도 온천 여행 정리', blocks: [
+    { kind: 'text', text: '부산에서 1박 2일, 22만 원대로 온천까지 가능할까요?' },
+    { kind: 'summary', title: '한눈에 보기', items: ['가격 229,000원부터', '1박 2일 일정', '==온천욕 포함==', 'BBQ 특식'] },
+    { kind: 'image', caption: '이즈하라 시내 풍경' },
+    ...[1, 2, 3, 4].flatMap((n) => [{ kind: 'heading', text: `==소제목 ${n}==` }, { kind: 'text', text: `본문 ${n} 내용입니다.` }]),
+    { kind: 'qna', question: '취소는?', answer: '출발 7일 전까지 규정에 따라 환불됩니다. 자세한 기준은 상품 페이지에서 확인하세요.' },
+  ] };
+  const { post } = quickPost.assemblePost({ generated, keyword: '대마도 온천 여행', kind: 'travel', issuedUrl, assets: [{ id: 'img-1', path: 'a.jpg' }], title: '대마도', priceText: '229,000 원' });
+  assert.ok(post.blocks[0]._disclosure);
+  assert.match(post.blocks[1].text, /22만 원대/);
+  assert.match(post.blocks[2].text, /^한눈에 보기/);
+  assert.equal(post.blocks[3].kind, 'link');
+  const links = post.blocks.filter((block) => block.kind === 'link');
+  assert.equal(links.length, 3);
+  assert.ok(links.every((block) => block.href === issuedUrl && block.btn === true));
+  const imageIndex = post.blocks.findIndex((block) => block.kind === 'image');
+  assert.match(post.blocks[imageIndex + 1].text, /이즈하라/);
+  assert.ok(post.blocks.filter((block) => block.kind === 'heading').every((block) => !block.text.includes('==')));
+  assert.match(post.title, /\d/);
+  const qna = post.blocks.find((block) => block.kind === 'qna');
+  assert.ok(qna.answer.split('\n').every((line) => line.length <= quickPost.LAYOUT.lineChars + 6));
+});
+
+test('page text cleanup drops leading navigation and caps length to save tokens', () => {
+  const raw = 'Naver 로그인 더보기 여행상품 메뉴 '.repeat(5) + '부산출발 대마도 2일 1명부터출발확정 상품 설명 ' + '일정 안내 '.repeat(2000);
+  const cleaned = quickPost.cleanPageText(raw, '부산출발 대마도 2일 1명부터출발확정');
+  assert.ok(cleaned.startsWith('부산출발 대마도 2일'));
+  assert.ok(cleaned.length <= 4000);
+  assert.ok(quickPost.buildKeywordPrompt({ title: '부산출발 대마도 2일', summary: raw, priceText: '' }).length < 2200);
+});

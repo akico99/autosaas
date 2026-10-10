@@ -1581,7 +1581,8 @@ app.whenReady().then(async () => {
       stage = 'keywords';
       let keywords;
       try {
-        const { text } = await runClaude({ system: '주어진 상품 페이지 자료에서 검색 키워드만 제안합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildKeywordPrompt(product), model: 'haiku' });
+        const { text, meta } = await runClaude({ system: '주어진 상품 페이지 자료에서 검색 키워드만 제안합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildKeywordPrompt(product), model: 'haiku', effort: 'low' });
+        logTokenUsage('커넥트 키워드', product.title, meta);
         keywords = quickPost.parseKeywordsResponse(text, product.title);
       } catch (_) { keywords = quickPost.fallbackKeywords(product.title); }
       const analysis = { id, kind, issuedUrl, finalUrl, product, images, keywords };
@@ -1604,8 +1605,9 @@ app.whenReady().then(async () => {
       let assembled; let lastError;
       for (const model of ['opus', 'sonnet']) {
         try {
-          const { text } = await runClaude({ system: '페이지 자료에 근거해 네이버 블로그용 원고 JSON을 작성합니다. JSON 외의 설명은 출력하지 않습니다.', user: prompt, model });
-          assembled = quickPost.assemblePost({ generated: text, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: analysis.images.map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title });
+          const { text, meta } = await runClaude({ system: '페이지 자료에 근거해 네이버 블로그용 원고 JSON을 작성합니다. JSON 외의 설명은 출력하지 않습니다.', user: prompt, model });
+          logTokenUsage('커넥트 원고', keyword, meta);
+          assembled = quickPost.assemblePost({ generated: text, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: analysis.images.map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title, priceText: analysis.product.priceText });
           break;
         } catch (error) { lastError = error; }
       }

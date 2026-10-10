@@ -18,7 +18,7 @@ const { query } = require('@anthropic-ai/claude-agent-sdk');
  * @param {string} [p.model] - 모델 지정(선택). 비우면 로그인 계정 기본 모델 사용.
  * @returns {Promise<{ text: string, meta: object }>}
  */
-async function runClaude({ system, user, model } = {}) {
+async function runClaude({ system, user, model, effort } = {}) {
   // ★출력 잘림 방지 — 긴 글(시형식 20문단+)이 기본 출력토큰 한계에 걸려 "소제목만 있고 본문 없음"으로 잘리는 것 방지.
   //   이건 "천장(상한)"일 뿐이라 글이 필요한 만큼만 쓴다(프로·맥스 동일, 추가 비용 아님). ★ANTHROPIC_API_KEY는 절대 안 씀(구독 인증만) — 삭제까지 한다.
   const childEnv = { ...process.env };
@@ -27,6 +27,8 @@ async function runClaude({ system, user, model } = {}) {
 
   const options = {
     systemPrompt: system,
+    // ★내장 도구 정의를 아예 보내지 않는다. allowedTools:[]만으로는 도구 설명(약 1.3만 토큰)이 매 호출 입력에 붙는다(실측 16,840 → 3,350).
+    tools: [],
     allowedTools: [], // 도구 없음 — 글만 쓰게
     maxTurns: 8, // 긴 본문(특히 정보형)은 여러 턴에 걸쳐 완성될 수 있어 여유. 도구 없어 폭주 위험 없음.
     permissionMode: 'default',
@@ -40,7 +42,8 @@ async function runClaude({ system, user, model } = {}) {
   //   글 품질은 "프롬프트를 따르는 데서" 나오지 사고 깊이에서 나오는 게 아니므로 'medium'(적당한 사고)로 낮춰 속도↑·품질 유지.
   //   ★조절: 더 빠르게=‘low’ / 품질 최대=‘high’. (여기 한 줄만 바꾸면 됨)
   const WRITE_EFFORT = 'medium';
-  options.effort = WRITE_EFFORT;
+  // 짧은 JSON(키워드 등)은 호출측이 effort:'low'를 넘겨 생각 토큰을 줄인다.
+  options.effort = effort || WRITE_EFFORT;
 
   const q = query({ prompt: user, options });
 
