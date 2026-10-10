@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('api', {
   connectSaveProduct: (request) => ipcRenderer.invoke('connect:saveProduct', request || {}),
   connectPrepareKeywords: (request) => ipcRenderer.invoke('connect:prepareKeywords', request || {}),
   connectPrepareDelivery: (request) => ipcRenderer.invoke('connect:prepareDelivery', request || {}),
+  quickAnalyze: (request) => ipcRenderer.invoke('quick:analyze', request || {}),
+  quickGenerate: (request) => ipcRenderer.invoke('quick:generate', request || {}),
+  quickMarkSaved: (draftId) => ipcRenderer.invoke('quick:markSaved', { draftId }),
   // 원고 보관함 — 미리 생성·불러오기·수정·삭제·에디터 넣기 표시
   topicDraftsList: (topicId) => ipcRenderer.invoke('topicDrafts:list', topicId || 'saju'),
   topicDraftsGenerate: (request) => ipcRenderer.invoke('topicDrafts:generate', request || {}),

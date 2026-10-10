@@ -32,7 +32,7 @@ function addDraft(store, draft, { now = Date.now() } = {}) {
     keyword: draft.keyword,
     purpose: draft.purpose === 'home' ? 'home' : 'search',
     productKey: draft.productKey || '',
-    source: draft.source === 'import' ? 'import' : 'ai',
+    source: ['import', 'quick'].includes(draft.source) ? draft.source : 'ai',
     createdAt: new Date(now).toISOString(),
     updatedAt: null,
     injectedAt: null,

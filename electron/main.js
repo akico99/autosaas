@@ -65,6 +65,8 @@ const { buildAutoImportSave, deriveSeedKeywords } = require('../src/connect/auto
 const { prepareTravelGeneration } = require('../src/connect/prepareGeneration');
 const { createShortlinkResolver } = require('./shortlinkResolver');
 const { isTrustedConnectSender: validateTrustedConnectSender } = require('./trustedConnectSender');
+const quickPost = require('../src/connect/quickPost');
+const { createQuickCollector, validateHttpsUrl } = require('./quickCollect');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -1554,6 +1556,78 @@ app.whenReady().then(async () => {
   ipcMain.handle('connect:saveProduct', (event, input = {}) => dispatchConnectIpc('connect:saveProduct', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
   ipcMain.handle('connect:prepareKeywords', (event, input = {}) => dispatchConnectIpc('connect:prepareKeywords', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
   ipcMain.handle('connect:prepareDelivery', (event, input = {}) => dispatchConnectIpc('connect:prepareDelivery', event, input, { isTrustedSender: isTrustedConnectSender, service: connectService }));
+
+  // 새 간편 링크 글쓰기 경로: 엄격한 Connect 검수/카탈로그와 분리해 페이지 정보로 바로 작성한다.
+  const quickAnalyses = new Map();
+  const quickCollector = createQuickCollector({ scrapeRendered, nativeImage, userDataPath: app.getPath('userData'), partition: 'persist:naver', userAgent: _DESKTOP_UA_OF });
+  const quickAnalysisError = (error, stage) => ({ ok: false, error: error && error.message || '상품 페이지를 분석하지 못했습니다.', stage: error && error.stage || stage });
+  ipcMain.handle('quick:analyze', async (event, request = {}) => {
+    let stage = 'resolve';
+    try {
+      if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.', stage };
+      const issuedUrl = request && request.url;
+      const parsed = validateHttpsUrl(issuedUrl);
+      let finalUrl = issuedUrl;
+      if (parsed.hostname.toLowerCase() === 'naver.me') {
+        const resolved = await createShortlinkResolver({ BrowserWindow, session })(issuedUrl);
+        finalUrl = resolved && resolved.finalUrl;
+        if (!finalUrl) throw new Error('발급 링크의 상품 주소를 확인하지 못했습니다.');
+        validateHttpsUrl(finalUrl);
+      }
+      const id = `${Date.now()}-${require('node:crypto').randomBytes(4).toString('hex')}`;
+      stage = 'collect';
+      const { product, images } = await quickCollector(finalUrl, id);
+      const kind = quickPost.detectKind(finalUrl);
+      stage = 'keywords';
+      let keywords;
+      try {
+        const { text } = await runClaude({ system: '주어진 상품 페이지 자료에서 검색 키워드만 제안합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildKeywordPrompt(product), model: 'haiku' });
+        keywords = quickPost.parseKeywordsResponse(text, product.title);
+      } catch (_) { keywords = quickPost.fallbackKeywords(product.title); }
+      const analysis = { id, kind, issuedUrl, finalUrl, product, images, keywords };
+      const folder = path.join(app.getPath('userData'), 'quick-connect', id);
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'analysis.json'), JSON.stringify(analysis, null, 2), 'utf8');
+      quickAnalyses.set(id, analysis);
+      return { ok: true, ...analysis };
+    } catch (error) { return quickAnalysisError(error, stage); }
+  });
+  ipcMain.handle('quick:generate', async (event, request = {}) => {
+    try {
+      if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+      const id = String(request && request.id || '');
+      const keyword = String(request && request.keyword || '').trim();
+      const analysis = quickAnalyses.get(id);
+      if (!analysis) return { ok: false, error: '분석 결과가 만료되었습니다. 링크를 다시 분석해 주세요.' };
+      if (!keyword || keyword.length > 100) return { ok: false, error: '검색 키워드를 선택해 주세요.' };
+      const prompt = quickPost.buildWriterPrompt({ product: analysis.product, keyword, images: analysis.images, issuedUrl: analysis.issuedUrl });
+      let assembled; let lastError;
+      for (const model of ['opus', 'sonnet']) {
+        try {
+          const { text } = await runClaude({ system: '페이지 자료에 근거해 네이버 블로그용 원고 JSON을 작성합니다. JSON 외의 설명은 출력하지 않습니다.', user: prompt, model });
+          assembled = quickPost.assemblePost({ generated: text, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: analysis.images.map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title });
+          break;
+        } catch (error) { lastError = error; }
+      }
+      if (!assembled) throw lastError || new Error('원고를 생성하지 못했습니다.');
+      const result = { ok: true, post: assembled.post, assets: assembled.assets, status: 'ready' };
+      const { store, draft } = topicDrafts.addDraft(readDraftStore(), {
+        topicId: 'quick-connect', profileKey: '', keyword, purpose: 'search', productKey: '', source: 'quick', status: 'ready',
+        holdReasons: [], reviewReasons: [], result,
+      });
+      writeDraftStore(store);
+      return { ok: true, draftId: draft.id, post: assembled.post, assets: assembled.assets, kind: analysis.kind, issuedUrl: analysis.issuedUrl };
+    } catch (error) { return { ok: false, error: error && error.message || '원고를 생성하지 못했습니다.' }; }
+  });
+  ipcMain.handle('quick:markSaved', async (_event, { draftId } = {}) => {
+    try {
+      const store = readDraftStore();
+      if (!topicDrafts.listDrafts(store).some((draft) => draft.id === draftId)) return { ok: true };
+      const updated = topicDrafts.updateDraft(store, draftId, { injectedAt: new Date().toISOString() });
+      writeDraftStore(updated.store);
+      return { ok: true };
+    } catch (_) { return { ok: true }; }
+  });
 
   ipcMain.handle('generate:topic', async (event, request = {}) => {
     if (request && request.topicId === 'travel-connect') {
