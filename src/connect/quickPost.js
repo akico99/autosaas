@@ -194,7 +194,15 @@ function buildKeywordPrompt(product) {
 }
 const FACT_FIELDS = ['name', 'price', 'schedule', 'departure', 'includes', 'excludes', 'extraCosts', 'highlights', 'audience', 'cautions', 'cancellation', 'options'];
 function buildFactsPrompt(product) {
-  return `상품 페이지에서 구매 판단에 필요한 사실과 검색어를 정리하세요. 아래 자료만 근거로 하고 모르는 값은 비우거나 생략합니다. 한국어로 짧게 작성하며 각 항목은 40자 이내, facts 전체는 약 900자 이내입니다. keywords는 기존 기준대로 구매·비교 의도의 2~4어절 검색어 3개이며 브랜드명만 또는 전체 상품명 그대로는 피하고 이유는 40자 이내입니다. JSON만 출력하세요.\n스키마: {"facts":{"name":"","price":"","schedule":"","departure":"","includes":[],"excludes":[],"extraCosts":[],"highlights":[],"audience":[],"cautions":[],"cancellation":"","options":[]},"keywords":[{"keyword":"...","reason":"..."}]}\n\n상품명: ${product.title}\n가격 표시: ${product.priceText || '없음'}\n페이지 자료:\n${cleanPageText(product.summary, product.title, 4000)}`;
+  return `상품 페이지에서 구매 판단에 필요한 사실과 검색어를 정리하세요. 아래 자료만 근거로 하고 모르는 값은 비우거나 생략합니다. 한국어로 짧게 작성하며 각 항목은 40자 이내, 배열은 항목 6개 이내, facts 전체는 약 900자 이내입니다. keywords는 구매·비교 의도의 2~4어절 검색어 3개입니다. 3개 모두 목적지나 상품 종류 같은 핵심어(예: 대마도, 무선 이어폰)를 반드시 포함하고, 브랜드명만 또는 전체 상품명 그대로는 피하며, 이유는 40자 이내입니다. JSON만 출력하세요.\n스키마: {"facts":{"name":"","price":"","schedule":"","departure":"","includes":[],"excludes":[],"extraCosts":[],"highlights":[],"audience":[],"cautions":[],"cancellation":"","options":[]},"keywords":[{"keyword":"...","reason":"..."}]}\n\n상품명: ${product.title}\n가격 표시: ${product.priceText || '없음'}\n페이지 자료:\n${cleanPageText(product.summary, product.title, 4000)}`;
+}
+// 키워드 속 숫자 표현(2박, 3일, 2인 등)이 상품명·가격·정리된 사실에 없으면 틀린 키워드로 보고 빼고 다른 후보로 채운다.
+function keepFactualKeywords(keywords, product = {}, facts = null) {
+  const hay = [product.title, product.priceText, JSON.stringify(facts || {})].join(' ').replace(/\s+/g, '');
+  const ok = (kw) => (kw.match(/\d+\s*(?:박|일|인|명|개월|개|시간|분|만\s*원|원|kg|g|ml)/gi) || []).every((t) => hay.includes(t.replace(/\s+/g, '')));
+  const kept = keywords.filter((item) => ok(item.keyword)); const seen = new Set(kept.map((item) => item.keyword));
+  for (const item of fallbackKeywords(product.title)) { if (kept.length >= 3) break; if (!seen.has(item.keyword) && ok(item.keyword)) { seen.add(item.keyword); kept.push(item); } }
+  return kept.slice(0, 3);
 }
 function parseFactsResponse(text, product = {}) {
   let parsed;
@@ -217,7 +225,7 @@ function parseFactsResponse(text, product = {}) {
     }
     if (!FACT_FIELDS.some((key) => Array.isArray(facts[key]) ? facts[key].length : facts[key])) return { facts: null, keywords: parseKeywordsResponse(JSON.stringify({ keywords: parsed.keywords }), product.title) };
   }
-  return { facts, keywords: parseKeywordsResponse(JSON.stringify({ keywords: parsed && parsed.keywords }), product.title) };
+  return { facts, keywords: keepFactualKeywords(parseKeywordsResponse(JSON.stringify({ keywords: parsed && parsed.keywords }), product.title), product, facts) };
 }
 function buildPlannerPrompt({ facts, product = {}, keyword, imageCount = 0, recentTitleTypes = [] } = {}) {
   const source = facts ? `상품 사실:\n${JSON.stringify(facts)}` : `페이지 자료:\n${cleanPageText(product.summary, product.title, 2500)}`;
@@ -288,4 +296,4 @@ function buildWriterPrompt({ product, keyword, images = [], issuedUrl } = {}) {
     cleanPageText(product.summary, product.title),
   ].join('\n');
 }
-module.exports = { LAYOUT, stripCodeFence, parseJsonObject, fallbackKeywords, parseKeywordsResponse, detectKind, cleanModelText, normalizeModelPost, formatTextBlocks, wrapSentence, ensureTitleNumber, cleanPageText, assemblePost, buildKeywordPrompt, buildWriterPrompt, buildFactsPrompt, parseFactsResponse, buildPlannerPrompt, buildBodyPrompt, runQuickGeneration };
+module.exports = { keepFactualKeywords, LAYOUT, stripCodeFence, parseJsonObject, fallbackKeywords, parseKeywordsResponse, detectKind, cleanModelText, normalizeModelPost, formatTextBlocks, wrapSentence, ensureTitleNumber, cleanPageText, assemblePost, buildKeywordPrompt, buildWriterPrompt, buildFactsPrompt, parseFactsResponse, buildPlannerPrompt, buildBodyPrompt, runQuickGeneration };

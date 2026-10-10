@@ -1581,7 +1581,7 @@ app.whenReady().then(async () => {
       stage = 'facts';
       let facts = null; let keywords;
       try {
-        const { text, meta } = await runClaude({ system: '상품 페이지 사실과 검색 키워드를 추출합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildFactsPrompt(product), model: 'haiku', effort: 'low' });
+        const { text, meta } = await runClaude({ system: '상품 페이지 사실과 검색 키워드를 추출합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildFactsPrompt(product), model: 'haiku', thinking: false });
         logTokenUsage('커넥트 자료정리', product.title, meta);
         ({ facts, keywords } = quickPost.parseFactsResponse(text, product));
       } catch (_) { keywords = quickPost.fallbackKeywords(product.title); }
@@ -1603,7 +1603,8 @@ app.whenReady().then(async () => {
       if (!keyword || keyword.length > 100) return { ok: false, error: '검색 키워드를 선택해 주세요.' };
       const recentTitleTypes = topicDrafts.listDrafts(readDraftStore(), 'quick-connect').map((draft) => draft.result && draft.result.plan && draft.result.plan.titleType).filter(Boolean).slice(0, 3);
       const generated = await quickPost.runQuickGeneration({ analysis, keyword, recentTitleTypes, run: async (params) => {
-        const { text, meta } = await runClaude(params);
+        // 역할 분담: Opus 기획만 생각 기능을 쓰고, 기획안을 따라 쓰는 본문 단계는 생각 기능을 끈다.
+        const { text, meta } = await runClaude({ ...params, thinking: params.phase === 'planner' ? undefined : false });
         logTokenUsage(params.phase === 'planner' ? '커넥트 기획' : '커넥트 본문', keyword, meta);
         return { text, meta };
       } });

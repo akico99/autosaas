@@ -18,7 +18,7 @@ const { query } = require('@anthropic-ai/claude-agent-sdk');
  * @param {string} [p.model] - 모델 지정(선택). 비우면 로그인 계정 기본 모델 사용.
  * @returns {Promise<{ text: string, meta: object }>}
  */
-async function runClaude({ system, user, model, effort } = {}) {
+async function runClaude({ system, user, model, effort, thinking } = {}) {
   // ★출력 잘림 방지 — 긴 글(시형식 20문단+)이 기본 출력토큰 한계에 걸려 "소제목만 있고 본문 없음"으로 잘리는 것 방지.
   //   이건 "천장(상한)"일 뿐이라 글이 필요한 만큼만 쓴다(프로·맥스 동일, 추가 비용 아님). ★ANTHROPIC_API_KEY는 절대 안 씀(구독 인증만) — 삭제까지 한다.
   const childEnv = { ...process.env };
@@ -44,6 +44,8 @@ async function runClaude({ system, user, model, effort } = {}) {
   const WRITE_EFFORT = 'medium';
   // 짧은 JSON(키워드 등)은 호출측이 effort:'low'를 넘겨 생각 토큰을 줄인다.
   options.effort = effort || WRITE_EFFORT;
+  // 정해진 형식을 따르기만 하는 단계(자료 정리·기획안 따라 쓰기)는 thinking:false로 생각 토큰을 끈다(실측 Haiku 출력 7,825→1,168).
+  if (thinking === false) options.thinking = { type: 'disabled' };
 
   const q = query({ prompt: user, options });
 

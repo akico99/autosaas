@@ -4411,8 +4411,11 @@
       if(!html) return;
       if(firstText){
         // 첫 본문 → 비어있는 첫 본문 문단에(대체). 실패(여전히 빈 본문)면 1회 재시도.
+        //   ★큰 첫 덩어리는 반영에 0.2초 이상 걸린다 → 바로 재시도하면 같은 내용이 두 번 들어간다(실측). 최대 3초 기다린 뒤에도 비었을 때만 재시도.
         await focusAndPaste(BODY_SEL, text, html);
-        if(await bodyEmpty()){ await new Promise(r=>setTimeout(r,250)); await focusAndPaste(BODY_SEL, text, html); }
+        var _stillEmpty=true;
+        for(var _w=0; _w<10; _w++){ if(!(await bodyEmpty())){ _stillEmpty=false; break; } await new Promise(r=>setTimeout(r,300)); }
+        if(_stillEmpty){ await focusAndPaste(BODY_SEL, text, html); }
         firstText = false;
         // ★첫 본문 뒤에도 커서를 "진짜 Cmd+End"로 문서 끝에 정박 → 뒤이어 오는 첫 사진/텍스트가 항상 맨 끝에 이어짐.
         try{ await byId('nvweb').executeJavaScript(mkFocusEndScript()); }catch(e){}

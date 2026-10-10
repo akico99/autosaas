@@ -176,3 +176,12 @@ test('quick generation retries a failed sonnet writer with haiku', async () => {
   } });
   assert.deepEqual(calls, ['planner:opus', 'writer:sonnet', 'writer:haiku']);
 });
+
+test('keywords with numbers that contradict the product facts are replaced', () => {
+  const product = { title: '부산출발 대마도 2일 1명부터출발확정 이즈하라 온천욕', priceText: '229,000 원' };
+  const facts = { schedule: '2026.11.01~11.02 1박 2일' };
+  const kept = quickPost.keepFactualKeywords([{ keyword: '부산 대마도 2박 여행', reason: '' }, { keyword: '대마도 1박 2일 온천', reason: '' }, { keyword: '대마도 온천 패키지', reason: '' }], product, facts);
+  assert.equal(kept.length, 3);
+  assert.ok(!kept.some((item) => /2박/.test(item.keyword)));
+  assert.ok(kept.some((item) => item.keyword === '대마도 1박 2일 온천'));
+});
