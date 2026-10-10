@@ -67,30 +67,49 @@ function normalizeModelPost(value) {
 }
 
 // ── 모바일 가독성 서식 ─────────────────────────────────────────────
-// 기본값: 가운데 정렬(에디터 입력 단계) + 한 줄 20자 안팎(띄어쓰기에서만 끊음) + 문단 2~3줄.
+// 기본값: 가운데 정렬(에디터 입력 단계) + 의미 단위 줄바꿈 + 문단 2~3줄.
+// 글자 수로 강제로 끊으면 화면 폭에 따라 한두 글자만 다음 줄로 떨어진다(실사용 확인).
+// 그래서 ① 한 문장 = 한 줄, ② 긴 문장만 쉼표·연결어미(~고, ~며, ~지만, ~는데…)에서 나누고,
+// ③ 마지막 짧은 낱말(2글자 이하)은 앞 낱말과 줄바꿈 없는 공백으로 묶어 혼자 떨어지지 않게 한다.
 // 강조는 ==문장== 표시를 연한 노란 글자 배경으로 바꾼다.
-const LAYOUT = { lineChars: 20, paragraphLines: 3, maxParagraphLines: 4, highlight: '#fff5b1' };
+const LAYOUT = { lineChars: 26, paragraphLines: 3, maxParagraphLines: 4, highlight: '#fff5b1' };
+const NBSP = '\u00a0';
 const HIGHLIGHT_OPEN = '<span class="__se-node" style="background-color:' + LAYOUT.highlight + ';">';
 function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function plainOf(value) { return String(value || '').replace(/==/g, ''); }
 function splitSentences(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().split(/(?<=[.!?…]|[다요죠]\.)\s+/).map((s) => s.trim()).filter(Boolean);
+  return String(text || '').replace(/\s+/g, ' ').trim().split(/(?<=[.!?…](?:==)?)\s+/).map((s) => s.trim()).filter(Boolean);
 }
-// 문장을 띄어쓰기 기준으로 lineChars 이하 줄로 나눈다(표시용 글자 수는 == 표시를 제외).
+// 의미가 끝나는 낱말: 쉼표로 끝나거나 연결어미로 끝나는 낱말 뒤에서만 줄을 바꿀 수 있다.
+const CLAUSE_END = /(,|·|:|고|며|면서|지만|는데|은데|ㄴ데|면|서|므로|니까|어도|아도|해도|라도|든지|거나|으로|로는|에는|에서는|부터|까지)$/;
+function noOrphan(line) {
+  const words = line.split(' ');
+  if (words.length >= 2 && plainOf(words[words.length - 1]).length <= 2) return words.slice(0, -2).concat(words.slice(-2).join(NBSP)).join(' ');
+  return line;
+}
+// 짧은 문장은 그대로 한 줄. 긴 문장만 가운데에 가장 가까운 의미 단위 경계에서 나눈다(경계가 없으면 나누지 않음).
 function wrapSentence(sentence, max = LAYOUT.lineChars) {
-  const lines = []; let line = '';
-  for (const word of sentence.split(' ').filter(Boolean)) {
-    const next = line ? line + ' ' + word : word;
-    if (line && plainOf(next).length > max) { lines.push(line); line = word; } else line = next;
+  const text = String(sentence || '').trim();
+  if (!text) return [];
+  if (plainOf(text).length <= max) return [noOrphan(text)];
+  const words = text.split(' ');
+  const total = plainOf(text).length; let best = -1; let bestScore = Infinity; let run = 0;
+  for (let i = 0; i < words.length - 1; i += 1) {
+    run += plainOf(words[i]).length + 1;
+    const word = plainOf(words[i]);
+    if (!CLAUSE_END.test(word)) continue;
+    if (run < 8 || total - run < 8) continue; // 너무 짧은 조각은 만들지 않음
+    const score = Math.abs(total / 2 - run);
+    if (score < bestScore) { bestScore = score; best = i; }
   }
-  if (line) lines.push(line);
-  return lines;
+  if (best < 0) return [noOrphan(text)];
+  return [...wrapSentence(words.slice(0, best + 1).join(' '), max), ...wrapSentence(words.slice(best + 1).join(' '), max)];
 }
 // 줄 목록(== 표시 포함)을 HTML로: 강조가 줄을 넘어가도 줄마다 span을 닫고 다시 연다.
 function linesToHtml(lines, openAtStart = false) {
   let open = openAtStart;
   const html = lines.map((line) => {
-    const parts = escapeHtml(line).split('==');
+    const parts = escapeHtml(line).replace(/\u00a0/g, '&nbsp;').split('==');
     let out = open ? HIGHLIGHT_OPEN : '';
     parts.forEach((part, index) => {
       if (index > 0) { out += open ? '</span>' : HIGHLIGHT_OPEN; open = !open; }
@@ -119,8 +138,9 @@ function formatTextBlocks(text) {
 function wrapPlain(text) { return splitSentences(plainOf(text)).flatMap((s) => wrapSentence(s)).join('\n'); }
 function summaryBlock(block) {
   const head = '<b>' + escapeHtml(block.title || '한눈에 보기') + '</b>';
-  const items = block.items.map((item) => linesToHtml(wrapSentence('✔ ' + item, LAYOUT.lineChars + 4)).html);
-  return { kind: 'text', text: [block.title || '한눈에 보기', ...block.items.map((item) => '✔ ' + plainOf(item))].join('\n'), html: [head, ...items].join('<br>') };
+  // 요약 항목은 나누지 않고 한 줄로 둔다(줄바꿈은 기기에 맡기고, 끝 낱말만 묶음).
+  const items = block.items.map((item) => linesToHtml([noOrphan('✔ ' + item)]).html);
+  return { kind: 'text', text: [block.title || '한눈에 보기', ...block.items.map((item) => noOrphan('✔ ' + plainOf(item)))].join('\n'), html: [head, ...items].join('<br>') };
 }
 function ensureTitleNumber(title, priceText, headingCount) {
   if (/\d/.test(title)) return title;
@@ -137,7 +157,8 @@ function assemblePost({ generated, keyword, kind, issuedUrl, assets = [], title:
   const disclosure = getConnectDisclosure(kind === 'travel' ? 'travel' : 'shopping');
   const linkText = kind === 'travel' ? '상품 일정·가격 확인하기' : '상품 가격·옵션 확인하기';
   // inline: 문서 끝 링크 카드로 옮기지 않고 제자리에 클릭 가능한 버튼(표 셀 링크)으로 넣는다.
-  const link = () => ({ kind: 'link', text: linkText, href: issuedUrl, btn: true, inline: true, color: '#eaf6ef' });
+  // para: 문단 속 링크로 넣는다. 네이버가 이 링크 아래에 상품 사진 링크 카드를 자동으로 붙인다(실측).
+  const link = () => ({ kind: 'link', text: linkText, href: issuedUrl, para: true, inline: true });
   const usableAssets = assets.slice(0, 8).map((asset, index) => ({ id: String(asset.id || `img-${index + 1}`), path: asset.path, caption: cleanModelText(asset.caption || productTitle || '상품 이미지') }));
   const maxImages = Math.min(usableAssets.length, 6); let imageCount = 0;
   const blocks = [{ kind: 'text', text: disclosure, _disclosure: true }]; let introLinkAdded = false; let middleLinkAdded = false;
@@ -146,7 +167,8 @@ function assemblePost({ generated, keyword, kind, issuedUrl, assets = [], title:
     if (block.kind === 'image') {
       if (imageCount < maxImages) {
         blocks.push({ kind: 'image', assetId: usableAssets[imageCount++].id });
-        if (block.caption) blocks.push({ kind: 'text', text: wrapPlain(block.caption), html: '<span style="color:#8b95a5;">' + linesToHtml(wrapSentence(plainOf(block.caption))).html + '</span>' });
+        // 네이버는 사진을 설명 문단 아래에 넣으므로, 설명은 "아래 사진" 안내로 읽히게 ▼를 붙인다(실측).
+        if (block.caption) blocks.push({ kind: 'text', text: '▼ ' + wrapPlain(block.caption), html: '<span style="color:#8b95a5;">▼ ' + linesToHtml(wrapSentence(plainOf(block.caption))).html + '</span>' });
       }
       continue;
     }
@@ -234,7 +256,7 @@ function buildPlannerPrompt({ facts, product = {}, keyword, imageCount = 0, rece
 function buildBodyPrompt({ facts, plan, keyword, imageCount = 0, kind = 'shopping' } = {}) {
   const factInput = facts ? JSON.stringify(facts) : '(확인 가능한 사실 없음. 미확인 질문은 상품 페이지 확인을 안내하세요.)';
   const count = Math.max(0, Math.min(6, imageCount));
-  return `아래 기획안 순서와 내용을 따라 네이버 블로그 추천 글을 한국어 존댓말로 작성하세요.\n규칙: 입력 사실만 사용, 가격은 작성 시점 기준이며 바뀔 수 있다고 한 번 알림, 1인칭 체험·과장 금지, URL 금지, 공백 포함 1,500~2,300자. 강조는 섹션마다 최대 한 문장을 ==...==로 감쌉니다.\n블록 순서: 첫 text는 plan.hook, summary 제목 "한눈에 보기"와 plan.summary, 이후 sections 순서대로 heading과 사실 기반 text. 이미지 ${count}개를 만들고 첫 이미지는 첫 heading 전에 둡니다. image.caption은 사진 설명입니다. 다음 summary 제목은 "이런 분께 맞아요 / 아쉬울 수 있어요"이고 good 항목 앞에 "맞아요: ", bad 앞에 "아쉬워요: "를 붙입니다. facts가 충분하면 table을 선택적으로 추가하세요. plan.questions 각각에 Q&A로 답하고 사실을 모르면 상품 페이지에서 확인하라고 하세요. 마지막 text는 plan.closing입니다.\nJSON만 출력: {"title":"...","blocks":[{"kind":"text","text":"..."},{"kind":"summary","title":"...","items":["..."]},{"kind":"heading","text":"..."},{"kind":"image","caption":"..."},{"kind":"table","caption":"...","columns":["..."],"rows":[["..."] ]},{"kind":"qna","question":"...","answer":"..."}]}\n\n상품 유형: ${kind}\n키워드: ${keyword}\nfacts: ${factInput}\nplan: ${JSON.stringify(plan)}`;
+  return `아래 기획안 순서와 내용을 따라 네이버 블로그 추천 글을 한국어 존댓말로 작성하세요.\n규칙: 입력 사실만 사용, 가격은 작성 시점 기준이며 바뀔 수 있다고 한 번 알림, 1인칭 체험·과장 금지, URL 금지, 한 문장은 30자 안팎으로 짧게(긴 내용은 두 문장으로 나눔), 공백 포함 1,500~2,300자. 강조는 섹션마다 최대 한 문장을 ==...==로 감쌉니다.\n블록 순서: 첫 text는 plan.hook, summary 제목 "한눈에 보기"와 plan.summary, 이후 sections 순서대로 heading과 사실 기반 text. 이미지 ${count}개를 만들고 첫 이미지는 첫 heading 전에 둡니다. image.caption은 사진 설명입니다. 다음 summary 제목은 "이런 분께 맞아요 / 아쉬울 수 있어요"이고 good 항목 앞에 "맞아요: ", bad 앞에 "아쉬워요: "를 붙입니다. facts가 충분하면 table을 선택적으로 추가하세요. plan.questions 각각에 Q&A로 답하고 사실을 모르면 상품 페이지에서 확인하라고 하세요. 마지막 text는 plan.closing입니다.\nJSON만 출력: {"title":"...","blocks":[{"kind":"text","text":"..."},{"kind":"summary","title":"...","items":["..."]},{"kind":"heading","text":"..."},{"kind":"image","caption":"..."},{"kind":"table","caption":"...","columns":["..."],"rows":[["..."] ]},{"kind":"qna","question":"...","answer":"..."}]}\n\n상품 유형: ${kind}\n키워드: ${keyword}\nfacts: ${factInput}\nplan: ${JSON.stringify(plan)}`;
 }
 function normalizePlan(text) {
   const plan = typeof text === 'string' ? parseJsonObject(text) : text;

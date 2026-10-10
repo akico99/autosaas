@@ -62,13 +62,13 @@ test('kind detection distinguishes travel Naver pages from shopping', () => {
   assert.equal(quickPost.detectKind('https://smartstore.naver.com/shop/products/123'), 'shopping');
 });
 
-test('mobile formatting wraps lines near 20 chars, keeps paragraphs short, and highlights marked text', () => {
+test('mobile formatting breaks at meaning units, keeps paragraphs short, and highlights marked text', () => {
   const blocks = quickPost.formatTextBlocks('부산에서 출발해 1박 2일 동안 대마도 이즈하라를 둘러보는 일정입니다. ==온천욕과 BBQ 특식이 포함돼 있어 따로 챙길 비용이 적습니다.== 출발 확정 상품이라 일정이 취소될 걱정도 덜 수 있습니다. 가격은 작성 시점 기준입니다.');
   assert.ok(blocks.length >= 2);
   for (const block of blocks) {
     const lines = block.text.split('\n');
     assert.ok(lines.length <= quickPost.LAYOUT.maxParagraphLines);
-    assert.ok(lines.every((line) => line.length <= quickPost.LAYOUT.lineChars || !line.includes(' ')), lines.join('|'));
+    assert.ok(lines.every((line) => !/ [^ \u00a0]{1,2}$/.test(line)), 'no orphan short last word: ' + lines.join('|'));
     assert.ok(!block.text.includes('=='));
   }
   const html = blocks.map((block) => block.html).join('');
@@ -98,13 +98,13 @@ test('selling layout: hook, summary box, three button links, image captions, pla
   assert.equal(post.blocks[3].kind, 'link');
   const links = post.blocks.filter((block) => block.kind === 'link');
   assert.equal(links.length, 3);
-  assert.ok(links.every((block) => block.href === issuedUrl && block.btn === true));
+  assert.ok(links.every((block) => block.href === issuedUrl && block.para === true));
   const imageIndex = post.blocks.findIndex((block) => block.kind === 'image');
   assert.match(post.blocks[imageIndex + 1].text, /이즈하라/);
   assert.ok(post.blocks.filter((block) => block.kind === 'heading').every((block) => !block.text.includes('==')));
   assert.match(post.title, /\d/);
   const qna = post.blocks.find((block) => block.kind === 'qna');
-  assert.ok(qna.answer.split('\n').every((line) => line.length <= quickPost.LAYOUT.lineChars + 6));
+  assert.ok(qna.answer.length > 0);
 });
 
 test('page text cleanup drops leading navigation and caps length to save tokens', () => {

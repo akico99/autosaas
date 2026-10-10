@@ -3705,6 +3705,10 @@
       var mm=href.match(/^__CPLINK_(\d+)__$/); // 쿠팡 자리표시자 → 실제 URL 치환
       var isCoupang=false;
       if(mm && window._coupangLinks && window._coupangLinks[+mm[1]]){ href=window._coupangLinks[+mm[1]].url; if(window._cpUsed) window._cpUsed[+mm[1]]=true; isCoupang=true; }
+      // ★문단 속 링크(빠른 커넥트 원고) — 네이버가 텍스트 링크로 저장하고 그 아래 상품 링크 카드를 자동으로 붙인다(실측).
+      if(b.para===true && !isCoupang){
+        return blankPara() + seText('<a href="'+esc(href)+'" style="color:#2a5bd7;text-decoration:underline;"><b>👉 '+nl(b.text||'확인하기')+'</b></a>', FFCLASS, (parseInt(window._fsBody,10)||16)+2, 'center', true) + blankPara();
+      }
       // ★네이버는 붙여넣기 시 "문단 속 <a> 링크"를 지운다(=텍스트만 남음). "표 셀 안의 <a>"는 살아남는다 → 링크는 전부 표 셀로 넣는다.
       //   애드센스 = 배경·테두리 있는 "버튼". 쿠팡 등 = 배경·테두리 없는 "그냥 링크처럼"(둘 다 실제 클릭 링크).
       if(b.btn===true && !isCoupang){
