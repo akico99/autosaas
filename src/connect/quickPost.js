@@ -192,6 +192,68 @@ function cleanPageText(summary, title = '', max = 4000) {
 function buildKeywordPrompt(product) {
   return `상품 페이지 자료를 보고 네이버에서 실제 검색할 만한 한국어 검색어 3개를 제안하세요. 2~4어절로, 목적지/상품 종류/특징을 포함하고 브랜드명만 쓰거나 전체 상품명을 그대로 쓰지 마세요. 구매 직전 사람이 찾을 만한 검색어(가격·일정·후기 대신 비교·추천 의도)를 우선합니다. 이유는 40자 이내로 씁니다. 페이지에 없는 사실은 만들지 마세요. JSON만 출력하세요: {"keywords":[{"keyword":"...","reason":"..."}]}\n\n상품명: ${product.title}\n가격 표시: ${product.priceText || '없음'}\n페이지 내용:\n${cleanPageText(product.summary, product.title, 1500)}`;
 }
+const FACT_FIELDS = ['name', 'price', 'schedule', 'departure', 'includes', 'excludes', 'extraCosts', 'highlights', 'audience', 'cautions', 'cancellation', 'options'];
+function buildFactsPrompt(product) {
+  return `상품 페이지에서 구매 판단에 필요한 사실과 검색어를 정리하세요. 아래 자료만 근거로 하고 모르는 값은 비우거나 생략합니다. 한국어로 짧게 작성하며 각 항목은 40자 이내, facts 전체는 약 900자 이내입니다. keywords는 기존 기준대로 구매·비교 의도의 2~4어절 검색어 3개이며 브랜드명만 또는 전체 상품명 그대로는 피하고 이유는 40자 이내입니다. JSON만 출력하세요.\n스키마: {"facts":{"name":"","price":"","schedule":"","departure":"","includes":[],"excludes":[],"extraCosts":[],"highlights":[],"audience":[],"cautions":[],"cancellation":"","options":[]},"keywords":[{"keyword":"...","reason":"..."}]}\n\n상품명: ${product.title}\n가격 표시: ${product.priceText || '없음'}\n페이지 자료:\n${cleanPageText(product.summary, product.title, 4000)}`;
+}
+function parseFactsResponse(text, product = {}) {
+  let parsed;
+  try { parsed = parseJsonObject(text); } catch (_) { return { facts: null, keywords: fallbackKeywords(product.title) }; }
+  const source = parsed && parsed.facts && typeof parsed.facts === 'object' ? parsed.facts : null;
+  const facts = source ? {} : null;
+  if (source) {
+    let remaining = 900;
+    for (const key of FACT_FIELDS) {
+      if (remaining <= 0) break;
+      if (['includes', 'excludes', 'extraCosts', 'highlights', 'audience', 'cautions', 'options'].includes(key)) {
+        const values = Array.isArray(source[key]) ? source[key] : [];
+        const items = values.map((v) => cleanModelText(v).slice(0, 40)).filter(Boolean).slice(0, 12);
+        facts[key] = [];
+        for (const item of items) { if (item.length > remaining) break; facts[key].push(item); remaining -= item.length; }
+      } else {
+        const value = cleanModelText(source[key]).slice(0, 40);
+        facts[key] = value.slice(0, remaining); remaining -= facts[key].length;
+      }
+    }
+    if (!FACT_FIELDS.some((key) => Array.isArray(facts[key]) ? facts[key].length : facts[key])) return { facts: null, keywords: parseKeywordsResponse(JSON.stringify({ keywords: parsed.keywords }), product.title) };
+  }
+  return { facts, keywords: parseKeywordsResponse(JSON.stringify({ keywords: parsed && parsed.keywords }), product.title) };
+}
+function buildPlannerPrompt({ facts, product = {}, keyword, imageCount = 0, recentTitleTypes = [] } = {}) {
+  const source = facts ? `상품 사실:\n${JSON.stringify(facts)}` : `페이지 자료:\n${cleanPageText(product.summary, product.title, 2500)}`;
+  return `상품 판매 글의 기획안을 JSON으로 작성하세요. facts와 입력에서 확인되는 사실만 쓰고 모르는 정보는 생략하세요.\n제목 유형 중 사실이 가장 잘 뒷받침하는 하나를 고릅니다. 최근 3회 유형은 피하고, 근거가 되는 유형이 하나뿐이면 그 유형을 선택합니다.\nA 가격형: 가격이 가장 강한 판단 근거일 때 (예: "부산 대마도 온천 1박 2일 229,000원, 포함 내역 정리")\nB 목록형: 확인할 조건이 여러 개일 때 (예: "부산 대마도 온천 1박 2일, 예약 전 확인할 5가지")\nC 질문형: 가격 대비 구성이 눈에 띄어 궁금증을 줄 수 있을 때 (예: "부산 대마도 온천 1박 2일, 22만 원대로 다 될까?")\nD 대상형: 특정 고객에게 강한 사실(1인 출발확정, 아이 동반 등)이 있을 때 (예: "혼자도 출발확정, 부산 대마도 온천 1박 2일 22만 원대")\nE 비용형: 추가 비용·불포함 정보가 페이지에 있을 때만 (예: "부산 대마도 온천 229,000원, 추가 비용까지 합치면?")\n제목 유형은 A~E, 제목은 키워드로 시작하거나 포함하고 숫자를 넣어 25~40자. 최근 제목 유형: ${(recentTitleTypes || []).slice(0, 3).join(', ') || '없음'}. 숫자/강조를 포함해도 과장(역대급, 무조건)은 금지하고 사실만 씁니다.\nJSON 스키마: {"titleType":"A","title":"...","hook":["문장","문장"],"summary":["..."],"sections":[{"heading":"...","points":["..."],"emphasis":"... 또는 빈 문자열"}],"fit":{"good":["...","..."],"bad":["...","..."]},"questions":["...","...","..."],"closing":"..."}. hook 2~3문장, summary 4~5개 각 25자 이내, sections 4~5개 각 points 2~3개 짧은 사실, fit 각 2개, questions 3개. images=${Math.max(0, imageCount)}. JSON만 출력하세요.\n\n${source}\n키워드: ${keyword}\n가격 표시: ${product.priceText || '없음'}`;
+}
+function buildBodyPrompt({ facts, plan, keyword, imageCount = 0, kind = 'shopping' } = {}) {
+  const factInput = facts ? JSON.stringify(facts) : '(확인 가능한 사실 없음. 미확인 질문은 상품 페이지 확인을 안내하세요.)';
+  const count = Math.max(0, Math.min(6, imageCount));
+  return `아래 기획안 순서와 내용을 따라 네이버 블로그 추천 글을 한국어 존댓말로 작성하세요.\n규칙: 입력 사실만 사용, 가격은 작성 시점 기준이며 바뀔 수 있다고 한 번 알림, 1인칭 체험·과장 금지, URL 금지, 공백 포함 1,500~2,300자. 강조는 섹션마다 최대 한 문장을 ==...==로 감쌉니다.\n블록 순서: 첫 text는 plan.hook, summary 제목 "한눈에 보기"와 plan.summary, 이후 sections 순서대로 heading과 사실 기반 text. 이미지 ${count}개를 만들고 첫 이미지는 첫 heading 전에 둡니다. image.caption은 사진 설명입니다. 다음 summary 제목은 "이런 분께 맞아요 / 아쉬울 수 있어요"이고 good 항목 앞에 "맞아요: ", bad 앞에 "아쉬워요: "를 붙입니다. facts가 충분하면 table을 선택적으로 추가하세요. plan.questions 각각에 Q&A로 답하고 사실을 모르면 상품 페이지에서 확인하라고 하세요. 마지막 text는 plan.closing입니다.\nJSON만 출력: {"title":"...","blocks":[{"kind":"text","text":"..."},{"kind":"summary","title":"...","items":["..."]},{"kind":"heading","text":"..."},{"kind":"image","caption":"..."},{"kind":"table","caption":"...","columns":["..."],"rows":[["..."] ]},{"kind":"qna","question":"...","answer":"..."}]}\n\n상품 유형: ${kind}\n키워드: ${keyword}\nfacts: ${factInput}\nplan: ${JSON.stringify(plan)}`;
+}
+function normalizePlan(text) {
+  const plan = typeof text === 'string' ? parseJsonObject(text) : text;
+  if (!plan || !['A', 'B', 'C', 'D', 'E'].includes(plan.titleType) || !String(plan.title || '').trim()) throw new Error('기획 응답 형식이 올바르지 않습니다.');
+  return { ...plan, title: cleanModelText(plan.title) };
+}
+async function runQuickGeneration({ analysis, keyword, recentTitleTypes = [], run } = {}) {
+  const context = { facts: analysis.facts || null, product: analysis.product, keyword, imageCount: (analysis.images || []).length, recentTitleTypes };
+  const plannerPrompt = buildPlannerPrompt(context);
+  let planResult; let plannerError;
+  for (const model of ['opus', 'sonnet']) {
+    try { planResult = await run({ model, phase: 'planner', user: plannerPrompt, system: '상품 페이지 사실을 바탕으로 제목과 글의 기획안을 작성합니다. JSON 외 설명은 출력하지 않습니다.' }); break; }
+    catch (error) { plannerError = error; }
+  }
+  if (!planResult) throw plannerError || new Error('기획을 생성하지 못했습니다.');
+  const plan = normalizePlan(planResult.text);
+  const bodyPrompt = buildBodyPrompt({ facts: analysis.facts || null, plan, keyword, imageCount: context.imageCount, kind: analysis.kind });
+  let writerResult; let writerError;
+  for (const model of ['sonnet', 'haiku']) {
+    try { writerResult = await run({ model, phase: 'writer', user: bodyPrompt, system: '기획안과 상품 사실에 근거해 네이버 블로그 원고 JSON을 작성합니다. JSON 외 설명은 출력하지 않습니다.' }); break; }
+    catch (error) { writerError = error; }
+  }
+  if (!writerResult) throw writerError || new Error('본문을 생성하지 못했습니다.');
+  const generated = normalizeModelPost(writerResult.text); generated.title = plan.title;
+  const assembled = assemblePost({ generated, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: (analysis.images || []).map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title, priceText: analysis.product.priceText });
+  return { assembled, plan, savedPlan: { titleType: plan.titleType, title: plan.title } };
+}
 function buildWriterPrompt({ product, keyword, images = [], issuedUrl } = {}) {
   const imageSlots = Math.min(images.length, 6);
   return [
@@ -226,4 +288,4 @@ function buildWriterPrompt({ product, keyword, images = [], issuedUrl } = {}) {
     cleanPageText(product.summary, product.title),
   ].join('\n');
 }
-module.exports = { LAYOUT, stripCodeFence, parseJsonObject, fallbackKeywords, parseKeywordsResponse, detectKind, cleanModelText, normalizeModelPost, formatTextBlocks, wrapSentence, ensureTitleNumber, cleanPageText, assemblePost, buildKeywordPrompt, buildWriterPrompt };
+module.exports = { LAYOUT, stripCodeFence, parseJsonObject, fallbackKeywords, parseKeywordsResponse, detectKind, cleanModelText, normalizeModelPost, formatTextBlocks, wrapSentence, ensureTitleNumber, cleanPageText, assemblePost, buildKeywordPrompt, buildWriterPrompt, buildFactsPrompt, parseFactsResponse, buildPlannerPrompt, buildBodyPrompt, runQuickGeneration };

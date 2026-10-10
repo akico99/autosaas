@@ -1578,14 +1578,14 @@ app.whenReady().then(async () => {
       stage = 'collect';
       const { product, images } = await quickCollector(finalUrl, id);
       const kind = quickPost.detectKind(finalUrl);
-      stage = 'keywords';
-      let keywords;
+      stage = 'facts';
+      let facts = null; let keywords;
       try {
-        const { text, meta } = await runClaude({ system: '주어진 상품 페이지 자료에서 검색 키워드만 제안합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildKeywordPrompt(product), model: 'haiku', effort: 'low' });
-        logTokenUsage('커넥트 키워드', product.title, meta);
-        keywords = quickPost.parseKeywordsResponse(text, product.title);
+        const { text, meta } = await runClaude({ system: '상품 페이지 사실과 검색 키워드를 추출합니다. JSON 외의 설명은 출력하지 않습니다.', user: quickPost.buildFactsPrompt(product), model: 'haiku', effort: 'low' });
+        logTokenUsage('커넥트 자료정리', product.title, meta);
+        ({ facts, keywords } = quickPost.parseFactsResponse(text, product));
       } catch (_) { keywords = quickPost.fallbackKeywords(product.title); }
-      const analysis = { id, kind, issuedUrl, finalUrl, product, images, keywords };
+      const analysis = { id, kind, issuedUrl, finalUrl, product, images, facts, keywords };
       const folder = path.join(app.getPath('userData'), 'quick-connect', id);
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'analysis.json'), JSON.stringify(analysis, null, 2), 'utf8');
@@ -1601,24 +1601,20 @@ app.whenReady().then(async () => {
       const analysis = quickAnalyses.get(id);
       if (!analysis) return { ok: false, error: '분석 결과가 만료되었습니다. 링크를 다시 분석해 주세요.' };
       if (!keyword || keyword.length > 100) return { ok: false, error: '검색 키워드를 선택해 주세요.' };
-      const prompt = quickPost.buildWriterPrompt({ product: analysis.product, keyword, images: analysis.images, issuedUrl: analysis.issuedUrl });
-      let assembled; let lastError;
-      for (const model of ['opus', 'sonnet']) {
-        try {
-          const { text, meta } = await runClaude({ system: '페이지 자료에 근거해 네이버 블로그용 원고 JSON을 작성합니다. JSON 외의 설명은 출력하지 않습니다.', user: prompt, model });
-          logTokenUsage('커넥트 원고', keyword, meta);
-          assembled = quickPost.assemblePost({ generated: text, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: analysis.images.map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title, priceText: analysis.product.priceText });
-          break;
-        } catch (error) { lastError = error; }
-      }
-      if (!assembled) throw lastError || new Error('원고를 생성하지 못했습니다.');
-      const result = { ok: true, post: assembled.post, assets: assembled.assets, status: 'ready' };
+      const recentTitleTypes = topicDrafts.listDrafts(readDraftStore(), 'quick-connect').map((draft) => draft.result && draft.result.plan && draft.result.plan.titleType).filter(Boolean).slice(0, 3);
+      const generated = await quickPost.runQuickGeneration({ analysis, keyword, recentTitleTypes, run: async (params) => {
+        const { text, meta } = await runClaude(params);
+        logTokenUsage(params.phase === 'planner' ? '커넥트 기획' : '커넥트 본문', keyword, meta);
+        return { text, meta };
+      } });
+      const { assembled, plan } = generated;
+      const result = { ok: true, post: assembled.post, assets: assembled.assets, status: 'ready', plan: generated.savedPlan };
       const { store, draft } = topicDrafts.addDraft(readDraftStore(), {
         topicId: 'quick-connect', profileKey: '', keyword, purpose: 'search', productKey: '', source: 'quick', status: 'ready',
         holdReasons: [], reviewReasons: [], result,
       });
       writeDraftStore(store);
-      return { ok: true, draftId: draft.id, post: assembled.post, assets: assembled.assets, kind: analysis.kind, issuedUrl: analysis.issuedUrl };
+      return { ok: true, draftId: draft.id, post: assembled.post, assets: assembled.assets, kind: analysis.kind, issuedUrl: analysis.issuedUrl, titleType: plan.titleType };
     } catch (error) { return { ok: false, error: error && error.message || '원고를 생성하지 못했습니다.' }; }
   });
   ipcMain.handle('quick:markSaved', async (_event, { draftId } = {}) => {

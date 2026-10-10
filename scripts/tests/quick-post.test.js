@@ -114,3 +114,65 @@ test('page text cleanup drops leading navigation and caps length to save tokens'
   assert.ok(cleaned.length <= 4000);
   assert.ok(quickPost.buildKeywordPrompt({ title: '부산출발 대마도 2일', summary: raw, priceText: '' }).length < 2200);
 });
+
+test('facts parser strips fences and returns facts plus three parsed keywords', () => {
+  const result = quickPost.parseFactsResponse('```json\n{"facts":{"name":"대마도 온천","price":"229,000원"},"keywords":[{"keyword":"부산 대마도 여행","reason":"일정과 가격 비교"}]}\n```', { title: '대마도 온천' });
+  assert.equal(result.facts.name, '대마도 온천');
+  assert.equal(result.keywords.length, 3);
+  assert.equal(result.keywords[0].keyword, '부산 대마도 여행');
+});
+
+test('facts parser returns null for missing or empty facts and falls back for keywords', () => {
+  const result = quickPost.parseFactsResponse('{"keywords":[]}', { title: '부산 대마도 여행 1박 2일' });
+  assert.equal(result.facts, null);
+  assert.equal(result.keywords.length, 3);
+  assert.ok(result.keywords[0].keyword);
+});
+
+test('planner prompt uses compact facts and recent title types without raw page text', () => {
+  const facts = { name: '부산 대마도 온천', price: '229,000원', schedule: '1박 2일', departure: '부산항', includes: ['왕복 승선권', '온천욕'], excludes: [], extraCosts: [], highlights: ['출발 확정'], audience: [], cautions: [], cancellation: '', options: [] };
+  const prompt = quickPost.buildPlannerPrompt({ facts, product: { title: '부산 대마도 온천', priceText: '229,000원', summary: '비밀 페이지 문구'.repeat(1000) }, keyword: '부산 대마도 온천 여행', imageCount: 4, recentTitleTypes: ['A', 'D', 'B'] });
+  assert.match(prompt, /부산항/);
+  assert.match(prompt, /최근 제목 유형: A, D, B/);
+  assert.doesNotMatch(prompt, /비밀 페이지 문구/);
+  assert.ok(prompt.length < 3500);
+  assert.match(prompt, /A 가격형/);
+  assert.match(prompt, /E 비용형/);
+});
+
+test('body prompt follows planner hook and sections', () => {
+  const prompt = quickPost.buildBodyPrompt({ facts: { name: '상품' }, plan: { titleType: 'B', title: '상품 예약 전 확인할 5가지', hook: ['첫 문장입니다.', '둘째 문장입니다.'], summary: ['일정 1박 2일'], sections: [{ heading: '일정', points: ['1박 2일'], emphasis: '일정은 1박 2일입니다.' }], fit: { good: ['일정 확인'], bad: ['별도 비용 확인'] }, questions: ['취소 규정은?'], closing: '조건을 확인하세요.' }, keyword: '상품 여행', imageCount: 2, kind: 'travel' });
+  assert.match(prompt, /첫 문장입니다/);
+  assert.match(prompt, /일정은 1박 2일입니다/);
+  assert.match(prompt, /취소 규정은\?/);
+  assert.doesNotMatch(prompt, /페이지 자료:/);
+});
+
+test('quick generation runs planner then writer, overrides title, and saves plan', async () => {
+  const calls = [];
+  const result = await quickPost.runQuickGeneration({
+    analysis: { facts: { name: '상품', price: '229,000원' }, product: { title: '상품', priceText: '229,000원', summary: '' }, images: [], kind: 'travel', issuedUrl: 'https://example.com' },
+    keyword: '상품 여행', recentTitleTypes: ['B'],
+    run: async ({ model, user }) => { calls.push({ model, user }); return { text: model === 'opus' ? JSON.stringify({ titleType: 'A', title: '상품 여행 229,000원 가격 정리', hook: ['후킹입니다.'], summary: ['가격 229,000원'], sections: [{ heading: '가격', points: ['229,000원'], emphasis: '' }], fit: { good: ['가격 비교'], bad: ['일정 확인'] }, questions: ['취소 규정은?'], closing: '상세 조건을 확인하세요.' }) : JSON.stringify({ title: '모델 제목', blocks: [{ kind: 'text', text: '후킹입니다.' }, { kind: 'summary', title: '한눈에 보기', items: ['가격 229,000원'] }, { kind: 'heading', text: '가격' }] }), meta: {} }; },
+  });
+  assert.deepEqual(calls.map((call) => call.model), ['opus', 'sonnet']);
+  assert.equal(result.assembled.post.title, '상품 여행 229,000원 가격 정리');
+  assert.deepEqual(result.savedPlan, { titleType: 'A', title: '상품 여행 229,000원 가격 정리' });
+});
+
+test('quick generation retries a failed opus planner with sonnet', async () => {
+  const calls = [];
+  await quickPost.runQuickGeneration({ analysis: { facts: { name: '상품' }, product: { title: '상품', summary: '' }, images: [], kind: 'shopping', issuedUrl: 'https://example.com' }, keyword: '상품', run: async ({ model }) => { calls.push(model); if (model === 'opus') throw new Error('limit'); return { text: model === 'sonnet' && calls.filter((m) => m === 'sonnet').length === 1 ? JSON.stringify({ titleType: 'B', title: '상품 5가지', hook: ['소개입니다.'], summary: ['조건'], sections: [{ heading: '조건', points: ['확인'] }], fit: { good: ['비교'], bad: ['조건'] }, questions: ['추가 비용은?'], closing: '확인하세요.' }) : JSON.stringify({ title: 'x', blocks: [] }), meta: {} }; } });
+  assert.deepEqual(calls, ['opus', 'sonnet', 'sonnet']);
+});
+
+test('quick generation retries a failed sonnet writer with haiku', async () => {
+  const calls = [];
+  await quickPost.runQuickGeneration({ analysis: { facts: { name: '상품' }, product: { title: '상품', summary: '' }, images: [], kind: 'shopping', issuedUrl: 'https://example.com' }, keyword: '상품', run: async ({ model, phase }) => {
+    calls.push(`${phase}:${model}`);
+    if (model === 'sonnet' && phase === 'writer') throw new Error('writer failure');
+    if (phase === 'planner') return { text: JSON.stringify({ titleType: 'B', title: '상품 5가지', hook: ['소개입니다.'], summary: ['조건'], sections: [{ heading: '조건', points: ['확인'] }], fit: { good: ['비교'], bad: ['조건'] }, questions: ['추가 비용은?'], closing: '확인하세요.' }), meta: {} };
+    return { text: JSON.stringify({ title: '상품', blocks: [{ kind: 'text', text: '본문입니다.' }] }), meta: {} };
+  } });
+  assert.deepEqual(calls, ['planner:opus', 'writer:sonnet', 'writer:haiku']);
+});
