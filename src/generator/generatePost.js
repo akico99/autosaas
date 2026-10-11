@@ -4,7 +4,8 @@
 // 생성은 runClaude()가 사용자의 클로드 구독 로그인으로 처리한다(배포자 비용 0원).
 
 const { runClaude } = require('./runClaude');
-const { checkHomefeedWords } = require('./homefeedWords');
+const { checkHomefeedWords, ALL_TITLE_WORDS } = require('./homefeedWords');
+const { TITLE_MAX, shortenTitle } = require('./titleLength');
 const { getPostType, MAX_QUOTES } = require('./postTypes');
 const { buildSystemPrompt, buildUserPrompt, buildTitleRefinePrompt, TITLE_REFINE_SYSTEM } = require('./buildPrompt');
 const { fetchRealtimeTrends, fetchNewsHeadlines, fetchNewsArticles, fetchBlogFacts, fetchPlaceReviews, fetchTopTitles } = require('../keyword/trends');
@@ -408,18 +409,37 @@ async function finalizeTitle(candidate, { type, keyword, keywordFacts, refTitles
       .slice(0, 4)
       .map((b) => (b.text || '').replace(/\n/g, ' ').slice(0, 140));
     const facts = [...(keywordFacts || []).slice(0, 5), ...bodyFacts];
-    const user = buildTitleRefinePrompt({ typeKey: type, draft, facts, refTitles });
-    const _tr = Date.now();
-    const { text } = await runClaude({ system: TITLE_REFINE_SYSTEM, user, model });
-    try { console.log('[TIMING] ★제목 다듬기 runClaude = ' + Math.round((Date.now() - _tr) / 1000) + 's'); } catch (e) {}
-    const parsed = parseJsonLoose(text);
-    // 자극 단어가 살아 있을 때만 교체(제목 하드 규칙 유지). 아니면 원래 제목 보존.
-    if (parsed && parsed.title && checkHomefeedWords(parsed.title).ok) {
-      candidate.post.title = String(parsed.title).trim();
-      if (parsed.thumbnailText) candidate.post.thumbnailText = String(parsed.thumbnailText).trim();
-      candidate.titleRefined = true;
+    const basePrompt = buildTitleRefinePrompt({ typeKey: type, draft, facts, refTitles });
+    let feedback = '';
+    // ★자극 단어 포함 + 최대 30자를 모두 지킨 제목만 채택. 첫 결과가 어긋나면 이유를 알려 주고 한 번만 다시 다듬는다.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const _tr = Date.now();
+      const { text } = await runClaude({ system: TITLE_REFINE_SYSTEM, user: basePrompt + feedback, model });
+      try { console.log('[TIMING] ★제목 다듬기 runClaude = ' + Math.round((Date.now() - _tr) / 1000) + 's'); } catch (e) {}
+      const parsed = parseJsonLoose(text);
+      const raw = parsed && parsed.title ? String(parsed.title).trim() : '';
+      const refined = raw ? shortenTitle(raw, { keyword, max: TITLE_MAX.home, accept: (s) => checkHomefeedWords(s).ok }) : '';
+      if (refined && refined.length <= TITLE_MAX.home && checkHomefeedWords(refined).ok) {
+        candidate.post.title = refined;
+        if (parsed.thumbnailText) candidate.post.thumbnailText = String(parsed.thumbnailText).trim();
+        candidate.titleRefined = true;
+        break;
+      }
+      if (!raw) break;
+      const why = [];
+      if (raw.length > TITLE_MAX.home) why.push('공백 포함 ' + raw.length + '자로 깁니다(최대 ' + TITLE_MAX.home + '자)');
+      if (!checkHomefeedWords(raw).ok) why.push('홈판 자극 단어 목록의 단어가 글자 그대로 들어가지 않았습니다');
+      try { console.log('[TITLE] 다듬기 결과 탈락: ' + raw + ' / ' + why.join(', ')); } catch (e) {}
+      feedback = '\n\n[다시 쓰기] 방금 제목 "' + raw + '"은 ' + why.join(', ') + '. 같은 각도로 두 조건을 모두 지켜 다시 쓰세요. 아래 단어 중 하나를 글자 그대로(활용형 X) 넣습니다: ' + ALL_TITLE_WORDS.join(', ');
     }
   } catch (e) { /* 벼리기 실패해도 원래 제목으로 진행 */ }
+  // ★다듬기를 못 했거나 건너뛴 경우에도 너무 긴 제목은 의미 단위 앞까지 줄인다(자극 단어가 필요한 유형은 유지되는 경우만).
+  try {
+    if (candidate && candidate.post && candidate.post.title && type !== 'coupang') {
+      const needsWord = type !== 'review' && checkHomefeedWords(candidate.post.title).ok;
+      candidate.post.title = shortenTitle(candidate.post.title, { keyword, max: TITLE_MAX.home, accept: (s) => !needsWord || checkHomefeedWords(s).ok });
+    }
+  } catch (e) {}
   return candidate;
 }
 
@@ -801,4 +821,4 @@ function collectKeywordSources(keywordFacts, recentArr = [], blogArr = []) {
   return out;
 }
 
-module.exports = { generatePost, validatePost, parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectPlaceInfo, injectTravelPlaceInfo, gatherKeywordContext, collectKeywordSources };
+module.exports = { generatePost, finalizeTitle, validatePost, parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectPlaceInfo, injectTravelPlaceInfo, gatherKeywordContext, collectKeywordSources };

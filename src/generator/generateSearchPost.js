@@ -10,6 +10,7 @@
 const { runClaude } = require('./runClaude');
 const { getSearchTopic } = require('./searchTopics');
 const { MAX_QUOTES } = require('./postTypes');
+const { TITLE_MAX, shortenTitle } = require('./titleLength');
 const { parseJsonLoose, appendCtaBlock, buildPlaceInfoBlocks, injectTravelPlaceInfo, gatherKeywordContext } = require('./generatePost');
 const { fetchPlaceInfo } = require('../place/placeLookup');
 const { familyOf } = require('./searchTopics');
@@ -324,6 +325,8 @@ async function generateSearchPost({ topic, keyword, extra, style, memo, paid, co
     }
     // ★앱(렌더러)의 이미지 5장 보강이 "키워드+자동완성" 단계에서 쓰도록 자동완성을 post에 실어 보낸다.
     if (post) { try { post._autocomplete = (autocomplete || []).slice(0, 10); } catch (e) {} }
+    // ★제목이 기준(최대 32자)보다 길면 키워드를 남긴 채 의미 단위 앞까지 줄인다.
+    if (post && post.title) { try { post.title = shortenTitle(String(post.title).split(/\n/)[0], { keyword: kw || keyword || '', max: TITLE_MAX.search }); } catch (e) {} }
     // ★문장형 소제목 → 인용구(따옴표)로 강등 (사용자 확정: "리뷰 쓰면 주는 감자전, 이게 진짜 크더라고요" 같은 문장은 소제목이 아니라 "" 용).
     //   소제목은 "○○ 기본정보 / 메뉴와 맛" 같은 짧은 명사형 라벨만. 문장(쉼표 있고 길거나 서술형 종결)이면 본문 인용구로 내린다.
     if (post && Array.isArray(post.blocks)) {
