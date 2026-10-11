@@ -1183,6 +1183,29 @@
     };
     window._quickConnectHooks={
       isBusy:function(){ return !!window._travelConnectBusy || topicLock.busy(); },
+      // ★[새 글쓰기 화면] 버튼 — 남은 내용을 (이미 저장된 원고가 아니면) 임시저장한 뒤 빈 새 글쓰기로 바꾼다.
+      //   사용자가 누른 버튼이므로 "작성 중인 글" 복구 팝업은 [취소]로 닫는다(내용은 네이버 임시저장 목록에 남아 있음).
+      //   저장 확인이 안 되면 force=true일 때만 저장 없이 이동한다.
+      freshEditor:async function(force){
+        if(window._travelConnectBusy||!topicLock.tryAcquire()) throw new Error('다른 에디터 작업이 진행 중입니다.');
+        window._travelConnectBusy=true;
+        try{
+          var nv=byId('nvweb');
+          await guardRestorePopup();
+          if(force){
+            try{ if(nv.stop) nv.stop(); await nv.loadURL('https://blog.naver.com/GoBlogWrite.naver'); }catch(e){}
+            for(var i=0;i<20;i++){ await _sleepA(1000); if(await isOnEditorPage()) break; }
+            await _sleepA(1200); await guardRestorePopup();
+            return {ok:true};
+          }
+          var prep=await prepareTopicEditor();
+          if(prep&&prep.ok) return {ok:true,saved:!!prep.saved};
+          return {ok:false,stage:prep&&prep.stage,detail:(STAGE_LABEL[prep&&prep.stage]||'')+(prep&&prep.detail?' ('+prep.detail+')':'')};
+        }finally{
+          window._travelConnectBusy=false;
+          topicLock.release();
+        }
+      },
       deliver:async function({post,assets,keyword,kind}){
         if(window._travelConnectBusy||!topicLock.tryAcquire()) throw new Error('다른 에디터 작업이 진행 중입니다.');
         window._travelConnectBusy=true;
@@ -1235,7 +1258,7 @@
         probePopup:function(){ return nv.executeJavaScript(window.topicEditorGuard.POPUP_PROBE_SCRIPT); },
         inspect:function(){ return nv.executeJavaScript(_NV_INSPECT); },
         mark:function(){ return nv.executeJavaScript(_NV_MARK); },
-        save:function(){ return saveNaverDraft(); },
+        save:function(){ return saveIfChanged(); },
         openNew:async function(){ try{ if(nv.stop) nv.stop(); await nv.loadURL('https://blog.naver.com/GoBlogWrite.naver'); }catch(e){} },
         ensureEditor:openEditorNoDismiss,
         guard:guardRestorePopup, sleep:_sleepA
@@ -4032,6 +4055,18 @@
   var _NV_INSPECT=window.topicEditorGuard.INSPECT_SCRIPT;
   var _NV_MARK="(function(){var f=document.getElementById('mainFrame');var d=null;try{d=f&&f.contentDocument;}catch(e){}if(!d)return null;var t='fe'+Date.now()+Math.random().toString(36).slice(2);d.__baFresh=t;return t;})()";
   async function freshEditorOk(token){ try{ var st=await byId('nvweb').executeJavaScript(_NV_INSPECT); return !!(st&&st.isEditor&&!st.hasContent&&token&&st.token===token); }catch(e){ return false; } }
+  // ★에디터 내용 지문(제목+본문 컴포넌트 글자) — 방금 임시저장한 원고가 그대로 남아 있으면 다시 저장하지 않고 새 글쓰기로 넘어간다.
+  //   (같은 문서를 다시 저장하면 저장 개수가 늘지 않고 토스트도 안 떠 "save-unconfirmed"로 멈추던 문제)
+  async function _editorFingerprint(){
+    var t=await byId('nvweb').executeJavaScript("(function(){var f=document.getElementById('mainFrame');var d=f&&f.contentDocument;if(!d)return '';var parts=[].slice.call(d.querySelectorAll('.se-component')).map(function(c){return c.textContent||''});return parts.join('|').replace(/\\s+/g,'');})()");
+    if(!t) return '';
+    var h=0; for(var i=0;i<t.length;i++){ h=(h*31+t.charCodeAt(i))|0; }
+    return t.length+':'+h;
+  }
+  async function saveIfChanged(){
+    try{ var fp=await _editorFingerprint(); if(fp && window._lastSavedFp && fp===window._lastSavedFp) return 'saved'; }catch(e){}
+    return saveNaverDraft();
+  }
   // ★"작성 중인 글이 있습니다" 복구 팝업 — 떠 있는 채로 전체선택·삭제·입력하면 팝업 글자가 선택되는 사고가 난다. 편집 전에 그 팝업의 취소 버튼만 눌러 닫고 닫힘을 확인한다.
   async function guardRestorePopup(){
     var nv=byId('nvweb');
@@ -5094,7 +5129,7 @@
     try{ if(window.api.debugLog) window.api.debugLog('SAVE 저장버튼='+JSON.stringify(loc)); }catch(e){}
     if(!loc || !loc.x) return 'no-save-btn';
     try{ await window.api.editorClickAt(nv.getWebContentsId(), loc.x, loc.y); }catch(e){}
-    if(await confirmSaved(40)) return 'saved';
+    if(await confirmSaved(40)){ try{ window._lastSavedFp=await _editorFingerprint(); }catch(e){} return 'saved'; }
     return 'save-unconfirmed';
   }
 
