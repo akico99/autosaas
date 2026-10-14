@@ -5208,12 +5208,19 @@
     try{ await window.api.autoDone((window._autoLog||'')+'RESULT: '+msg); }catch(e){}
   }
   window._finishConnectAuto=finishAuto;
+  async function reportConnectAutoFailure(message){
+    var items=[];try{var queued=await window.api.queueList();if(queued&&queued.ok&&Array.isArray(queued.items))items=queued.items.filter(function(item){return item.status!=='done';});}catch(e){}
+    var left={total:items.length,travel:items.filter(function(item){return item.kind==='travel';}).length,shopping:items.filter(function(item){return item.kind==='shopping';}).length,unknown:items.filter(function(item){return item.kind!=='travel'&&item.kind!=='shopping';}).length};
+    var request={results:[{ok:false,error:message}],discovery:{travel:[],shopping:[]},queueLeft:left};
+    try{if(!window.api||typeof window.api.dailyReport!=='function')return {ok:false,error:'텔레그램 보고 기능을 사용할 수 없습니다.'};return await window.api.dailyReport(request);}
+    catch(error){return {ok:false,error:error&&error.message||String(error)};}
+  }
   async function autoConnectRun(isTest){
     window._autoIsTest=!!isTest;
     await autoLog('=== 예약 자동 실행 시작 (connect) ===');
     try{
       var ses=await window.api.checkSession();
-      if(!ses||!ses.naver) return finishAuto('네이버 로그인 안 됨 — 건너뜀');
+      if(!ses||!ses.naver){var loginMessage='네이버 로그인이 필요합니다. 앱에서 네이버에 로그인한 뒤 예약 실행을 다시 시도해 주세요.';var loginReport=await reportConnectAutoFailure(loginMessage);return finishAuto(loginReport&&loginReport.ok?(loginReport.text||loginMessage):loginMessage+' 텔레그램 보고 실패: '+(loginReport&&loginReport.error||'보고 기능을 확인해 주세요.'));}
       window._autoMode=true;
       var travelTab=byId('topic-travel-tab');
       if(!travelTab) return finishAuto('여행 커넥트 탭을 찾지 못했습니다.');
@@ -5226,7 +5233,7 @@
       if(!ready) return finishAuto('여행 커넥트 화면을 준비하지 못했습니다.');
       await autoLog('여행 커넥트 대기열 실행을 시작합니다.');
       await window.runDailyConnect({auto:true});
-    }catch(e){await finishAuto('오류: '+(e&&e.message||e));}
+    }catch(e){var failureMessage='예약 자동 실행 오류: '+(e&&e.message||e);var failureReport=await reportConnectAutoFailure(failureMessage);await finishAuto(failureMessage+(failureReport&&failureReport.ok?'':' · 텔레그램 보고 실패: '+(failureReport&&failureReport.error||'보고 기능을 확인해 주세요.')));}
   }
   async function autoRun(kindOverride, isTest){
     var autoMeta=null;

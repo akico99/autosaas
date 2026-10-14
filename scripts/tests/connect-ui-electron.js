@@ -55,10 +55,11 @@ async function main(){
     await page.locator('#tc-daily-queue-add').click();
     await page.waitForFunction(()=>window.fixtureCalls.dailyQueue.length===5);
     assert.match(await page.locator('#tc-daily-counts').innerText(),/대기 5개/);
+    await page.evaluate(()=>{window.fixtureCalls.dailyQueue[2].kind='travel';});
     await page.locator('#tc-daily-run').click();
     await page.waitForFunction(()=>window.fixtureCalls.dailyReports.length===1&&document.querySelector('#tc-daily-run').disabled===false,{timeout:15000});
     const dailyRun=await page.evaluate(()=>({queue:window.fixtureCalls.dailyQueue,order:window.fixtureCalls.dailyOrder,report:window.fixtureCalls.dailyReports[0],analysis:window.fixtureCalls.quickAnalyze,generation:window.fixtureCalls.quickGenerate,marked:window.fixtureCalls.quickMark}));
-    assert.equal(dailyRun.analysis,6,'the batch analyzes every needed link, including a third travel item that remains queued');
+    assert.equal(dailyRun.analysis,5,'the batch skips an already-classified surplus travel link after filling its quota');
     assert.equal(dailyRun.generation,5,'four daily drafts plus the earlier quick draft are generated');
     assert.equal(dailyRun.marked,5,'all four daily drafts and the quick draft are marked after delivery');
     assert.deepEqual(dailyRun.queue.map(item=>item.status),['done','done','queued','done','done']);
@@ -68,6 +69,17 @@ async function main(){
     assert.equal(deliverySteps.length,12,'each saved draft prepares, delivers, and marks before the next item');
     for(let i=0;i<deliverySteps.length;i+=3){assert.equal(deliverySteps[i],'fresh');assert.match(deliverySteps[i+1],/^deliver:(travel|shopping):선택 auto$/);assert.match(deliverySteps[i+2],/^mark:draft-/);}
     assert.match(await page.locator('#tc-daily-run-status').innerText(),/fixture Telegram report sent/);
+    const preflight=await page.evaluate(async()=>{window.fixtureCalls.naverSession=false;const before=window.fixtureCalls.discoveryCalls;const result=await window.runDailyConnect({auto:false});return {result,before,after:window.fixtureCalls.discoveryCalls,report:window.fixtureCalls.dailyReports[1]};});
+    assert.equal(preflight.result.ok,false,'a missing Naver session is a failed run');
+    assert.equal(preflight.after,preflight.before,'session preflight runs before product discovery');
+    assert.match(preflight.report.results[0].error,/네이버 로그인/,'the failure is sent through the daily report contract');
+    const reportFailure=await page.evaluate(async()=>{window.fixtureCalls.naverSession=true;window.fixtureCalls.dailyQueue.forEach(item=>item.status='done');window.fixtureCalls.dailyReportFailure=true;return window.runDailyConnect({auto:false});});
+    assert.equal(reportFailure.ok,false,'a failed Telegram report cannot count as a successful daily run');
+    assert.match(reportFailure.error,/fixture Telegram failure/);
+    const fatalRun=await page.evaluate(async()=>{window.fixtureCalls.dailyReportFailure=false;window.fixtureCalls.queueListFailure=true;return window.runDailyConnect({auto:false});});
+    assert.equal(fatalRun.ok,false,'fatal run errors remain failures');
+    const fatalReport=await page.evaluate(()=>window.fixtureCalls.dailyReports[3]); assert.match(fatalReport.results[0].error,/fixture queue failure/,'fatal run errors are sent through Telegram reporting');
+    await page.evaluate(()=>{window.fixtureCalls.queueListFailure=false;});
     await page.locator('#tc-advanced').evaluate(el=>{el.open=true;});
     await page.waitForSelector('.tc-product');
     // Match the live app's constrained flex layout, rather than a full-height standalone panel.
