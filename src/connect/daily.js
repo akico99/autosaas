@@ -46,6 +46,10 @@ function addQueueUrls(items, urls, { id = () => require('node:crypto').randomUUI
 
 function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+function isSuccessfulResult(result) {
+  return result && (result.ok === true || result.status === 'done' || result.status === 'success' || result.status === 'ok');
+}
+
 function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now = new Date()) {
   results = Array.isArray(results) ? results : [];
   discovery = discovery && typeof discovery === 'object' ? discovery : {};
@@ -54,7 +58,7 @@ function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now 
   const lines = [`📝 오늘의 커넥트 원고 (${date})`];
   for (const result of results) {
     // The renderer's dailyReport contract uses { ok: true, draftTitle }.
-    const ok = result.ok === true || result.status === 'done' || result.status === 'success' || result.status === 'ok';
+    const ok = isSuccessfulResult(result);
     const kind = result.kind === 'travel' ? '여행' : result.kind === 'shopping' ? '쇼핑' : '미분류';
     lines.push(`${ok ? '✅' : '❌'} ${kind} · ${escapeHtml(result.draftTitle || result.title || result.error || '원고 처리 실패')}${result.keyword ? ` · ${escapeHtml(result.keyword)}` : ''}`);
   }
@@ -65,7 +69,8 @@ function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now 
   for (const [kind, label] of [['travel', '여행'], ['shopping', '쇼핑']]) for (const item of (discovery[kind] || []).slice(0, 3)) {
     lines.push(`• ${label}: ${escapeHtml(item.name || '')}${item.price ? ` · ${escapeHtml(item.price)}` : ''}${item.why ? ` · ${escapeHtml(item.why)}` : ''}${item.keyword ? ` · 추천 키워드 ${escapeHtml(item.keyword)}` : ''}`);
   }
-  const target = 4; if (results.length < target) lines.push(`대기 링크가 부족해 ${results.length}편만 만들었습니다. 브랜드커넥트에서 링크를 발급해 앱 대기열에 넣어 주세요.`);
+  const target = 4; const saved = results.filter(isSuccessfulResult).length;
+  if (saved < target) lines.push(`오늘은 원고 ${target}편 중 ${saved}편을 임시저장했습니다. 브랜드커넥트에서 링크를 발급해 앱 대기열에 넣어 주세요.`);
   return lines.join('\n').replace(/\n/g, '<br>');
 }
 

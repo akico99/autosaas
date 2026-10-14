@@ -49,7 +49,7 @@ test('daily report contains counts, shortage, discovery items, and escaped HTML'
     { kind: 'travel', status: 'queued' }, { kind: null, status: 'queued' },
   ], discovery: { travel: [{ name: '<대마도>', price: '2만원', why: '인기 & 구성', keyword: '대마도 여행 추천' }] } }, new Date(2026, 0, 2));
   assert.match(report, /오늘의 커넥트 원고 \(01\/02\)/); assert.match(report, /여행 1 \/ 쇼핑 0 \/ 미분류 1/);
-  assert.match(report, /대기 링크가 부족해 1편만 만들었습니다/); assert.match(report, /&lt;대마도&gt;/); assert.match(report, /인기 &amp; 구성/);
+  assert.match(report, /원고 4편 중 1편을 임시저장했습니다/); assert.match(report, /&lt;대마도&gt;/); assert.match(report, /인기 &amp; 구성/);
 });
 
 test('daily report accepts renderer ok results and prefers the saved draft title', () => {
@@ -63,6 +63,12 @@ test('daily report handles null discovery and queue data from guarded runs', () 
   assert.match(report, /❌ 여행 · login required/);
   assert.match(report, /남은 대기 링크 0개 \(여행 0 \/ 쇼핑 0 \/ 미분류 0\)/);
   assert.match(report, /내일 발급하면 좋은 상품/);
+});
+
+test('daily report counts saved drafts rather than failed or skipped rows', () => {
+  const report = daily.buildReport({ results: [{ ok: false, error: 'login required' }] }, new Date(2026, 0, 2));
+  assert.match(report, /오늘은 원고 4편 중 0편을 임시저장했습니다/);
+  assert.doesNotMatch(report, /1편을 임시저장했습니다/);
 });
 
 test('auto keyword planner validates Opus choice and falls back to first candidate', async () => {
