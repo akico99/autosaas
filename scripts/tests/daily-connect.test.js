@@ -16,6 +16,13 @@ test('Telegram send splits HTML and uses the expected sendMessage payload', asyn
   assert.ok(calls.every((call) => call.body.text.length <= 3900));
 });
 
+test('Telegram converts report HTML breaks to supported message newlines', async () => {
+  const calls = [];
+  await telegram.sendTelegram({ token: 'test-token', chatId: '77', text: '첫째 줄<br>둘째 줄<br/>셋째 줄' }, { request: async (_url, body) => { calls.push(body); return { ok: true }; } });
+  assert.equal(calls[0].text, '첫째 줄\n둘째 줄\n셋째 줄');
+  assert.equal(calls[0].parse_mode, 'HTML');
+});
+
 test('Telegram findChatId selects the latest message chat', async () => {
   const found = await telegram.findChatId('x', { request: async () => ({ ok: true, result: [
     { update_id: 1, message: { chat: { id: 12, first_name: 'A' } } },
@@ -43,6 +50,12 @@ test('daily report contains counts, shortage, discovery items, and escaped HTML'
   ], discovery: { travel: [{ name: '<대마도>', price: '2만원', why: '인기 & 구성', keyword: '대마도 여행 추천' }] } }, new Date(2026, 0, 2));
   assert.match(report, /오늘의 커넥트 원고 \(01\/02\)/); assert.match(report, /여행 1 \/ 쇼핑 0 \/ 미분류 1/);
   assert.match(report, /대기 링크가 부족해 1편만 만들었습니다/); assert.match(report, /&lt;대마도&gt;/); assert.match(report, /인기 &amp; 구성/);
+});
+
+test('daily report accepts renderer ok results and prefers the saved draft title', () => {
+  const report = daily.buildReport({ results: [{ ok: true, kind: 'travel', title: '상품 제목', draftTitle: '임시저장 제목', keyword: '부산 여행' }] }, new Date(2026, 0, 2));
+  assert.match(report, /✅ 여행 · 임시저장 제목 · 부산 여행/);
+  assert.doesNotMatch(report, /❌ 여행/);
 });
 
 test('auto keyword planner validates Opus choice and falls back to first candidate', async () => {

@@ -50,9 +50,10 @@ function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now 
   const date = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
   const lines = [`📝 오늘의 커넥트 원고 (${date})`];
   for (const result of results) {
-    const ok = result.status === 'done' || result.status === 'success' || result.status === 'ok';
+    // The renderer's dailyReport contract uses { ok: true, draftTitle }.
+    const ok = result.ok === true || result.status === 'done' || result.status === 'success' || result.status === 'ok';
     const kind = result.kind === 'travel' ? '여행' : result.kind === 'shopping' ? '쇼핑' : '미분류';
-    lines.push(`${ok ? '✅' : '❌'} ${kind} · ${escapeHtml(result.title || result.draftTitle || result.error || '원고 처리 실패')}${result.keyword ? ` · ${escapeHtml(result.keyword)}` : ''}`);
+    lines.push(`${ok ? '✅' : '❌'} ${kind} · ${escapeHtml(result.draftTitle || result.title || result.error || '원고 처리 실패')}${result.keyword ? ` · ${escapeHtml(result.keyword)}` : ''}`);
   }
   const counts = Array.isArray(queueLeft) ? queueCounts(queueLeft) : { travel: queueLeft.travel || 0, shopping: queueLeft.shopping || 0, unknown: queueLeft.unknown || 0 };
   const total = counts.travel + counts.shopping + counts.unknown;

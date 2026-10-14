@@ -16,7 +16,8 @@ function defaultRequest(url, body) {
 }
 async function sendTelegram({ token, chatId, text }, { request = defaultRequest } = {}) {
   if (!token || !chatId) throw new Error('Telegram 봇 토큰과 채팅 ID를 설정해 주세요.');
-  const chunks = []; let rest = String(text || '');
+  // Telegram's HTML parser does not support <br>; use literal message newlines.
+  const chunks = []; let rest = String(text || '').replace(/<br\s*\/?>/gi, '\n');
   while (rest.length > 3900) { let cut = rest.lastIndexOf('<br>', 3900); if (cut < 1800) cut = 3900; chunks.push(rest.slice(0, cut)); rest = rest.slice(cut).replace(/^<br>/, ''); }
   if (rest || !chunks.length) chunks.push(rest);
   const results = [];
