@@ -1680,7 +1680,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('daily:report', async (event, request = {}) => {
     if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
-    const text = dailyConnect.buildReport(request); const c = readData('notify.json', {}); if (!c.telegramToken || !c.telegramChatId) return { ok: true, sent: false, text };
+    const text = dailyConnect.buildReport(request); const c = readData('notify.json', {}); if (!c.telegramToken || !c.telegramChatId) return { ok: false, sent: false, text, error: '텔레그램 봇 토큰과 채팅 ID를 설정해 주세요.' };
     try { await telegram.sendTelegram({ token: c.telegramToken, chatId: c.telegramChatId, text }); return { ok: true, sent: true, text }; } catch (error) { return { ok: false, sent: false, text, error: error.message }; }
   });
   ipcMain.handle('daily:log', async (event, { line } = {}) => { if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' }; try { fs.appendFileSync(dataFile('daily-connect.log'), `[${new Date().toISOString()}] ${String(line || '').replace(/[\r\n]/g, ' ').slice(0, 1000)}\n`); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
