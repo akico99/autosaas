@@ -58,6 +58,13 @@ test('daily report accepts renderer ok results and prefers the saved draft title
   assert.doesNotMatch(report, /❌ 여행/);
 });
 
+test('daily report handles null discovery and queue data from guarded runs', () => {
+  const report = daily.buildReport({ results: [{ ok: false, kind: 'travel', error: 'login required' }], discovery: null, queueLeft: null }, new Date(2026, 0, 2));
+  assert.match(report, /❌ 여행 · login required/);
+  assert.match(report, /남은 대기 링크 0개 \(여행 0 \/ 쇼핑 0 \/ 미분류 0\)/);
+  assert.match(report, /내일 발급하면 좋은 상품/);
+});
+
 test('auto keyword planner validates Opus choice and falls back to first candidate', async () => {
   const calls = [];
   const generated = await quickPost.runQuickGeneration({ keyword: 'auto', analysis: {

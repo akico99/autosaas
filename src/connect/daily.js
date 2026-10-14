@@ -47,6 +47,9 @@ function addQueueUrls(items, urls, { id = () => require('node:crypto').randomUUI
 function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now = new Date()) {
+  results = Array.isArray(results) ? results : [];
+  discovery = discovery && typeof discovery === 'object' ? discovery : {};
+  queueLeft = queueLeft && typeof queueLeft === 'object' ? queueLeft : [];
   const date = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
   const lines = [`📝 오늘의 커넥트 원고 (${date})`];
   for (const result of results) {
