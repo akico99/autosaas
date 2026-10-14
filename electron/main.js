@@ -66,7 +66,10 @@ const { prepareTravelGeneration } = require('../src/connect/prepareGeneration');
 const { createShortlinkResolver } = require('./shortlinkResolver');
 const { isTrustedConnectSender: validateTrustedConnectSender } = require('./trustedConnectSender');
 const quickPost = require('../src/connect/quickPost');
-const { createQuickCollector, validateHttpsUrl } = require('./quickCollect');
+const dailyConnect = require('../src/connect/daily');
+const discoverConnect = require('../src/connect/discover');
+const telegram = require('../src/notify/telegram');
+const { createQuickCollector, createPageRenderer, validateHttpsUrl } = require('./quickCollect');
 
 function readSearchPerformance() {
   const file = path.join(app.getPath('userData'), 'search-performance.json');
@@ -618,7 +621,8 @@ const { filterImagesByVision, classifyMyPhotos } = require('../src/image/visionF
 // ★예약 자동 실행 모드 — 스케줄러가 "앱 --auto"(홈판) 또는 "--auto-search"(검색용)로 실행하면 창 숨기고 자동 생성→임시저장→종료.
 const AUTO_MODE = process.argv.includes('--auto');            // 홈판 예약
 const AUTO_SEARCH_MODE = process.argv.includes('--auto-search'); // 검색용 예약
-const AUTO_ANY = AUTO_MODE || AUTO_SEARCH_MODE;
+const AUTO_CONNECT_MODE = process.argv.includes('--auto-connect'); // 커넥트 일일 예약
+const AUTO_ANY = AUTO_MODE || AUTO_SEARCH_MODE || AUTO_CONNECT_MODE;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -639,7 +643,7 @@ function createWindow() {
     },
   });
   // 자동 모드 = 로그인 화면 건너뛰고 바로 메인 앱을 auto=1로 로드(세션은 디스크에 유지됨). kind=검색용 구분.
-  if (AUTO_ANY) win.loadURL('http://127.0.0.1:' + APP_PORT + '/app/app.html?auto=1&kind=' + (AUTO_SEARCH_MODE ? 'search' : 'home'));
+  if (AUTO_ANY) win.loadURL('http://127.0.0.1:' + APP_PORT + '/app/app.html?auto=1&kind=' + (AUTO_CONNECT_MODE ? 'connect' : AUTO_SEARCH_MODE ? 'search' : 'home'));
   else win.loadURL('http://127.0.0.1:' + APP_PORT + '/app/login.html'); // ★첫 화면 = 로그인 (http로 서빙)
   win.webContents.once('destroyed', () => keywordReportPreparedBySender.delete(win.webContents.id));
 
@@ -683,6 +687,8 @@ function createWindow() {
 //   동시에 못 읽어 "네이버 로그인 안 됨"으로 오판한다(로그 확인됨). → 두 번째 실행은 즉시 종료하고,
 //   이미 로그인된 "실행 중인 앱"에 자동 생성을 위임한다(argv의 --auto/--auto-search를 넘겨서). 앱이 꺼져 있으면 첫 실행이 그대로 자동 수행.
 let mainWindow = null;
+let delegatedAutoRun = false;
+let delegatedAutoKind = '';
 // 키워드 미리보기는 이 프로세스에서 만든 값만 저장한다. 렌더러는 파일 경로나 임의 행을 export로 넘길 수 없다.
 const keywordReportPreparedBySender = new Map();
 const _gotSingleLock = app.requestSingleInstanceLock();
@@ -692,10 +698,13 @@ if (!_gotSingleLock) {
   app.on('second-instance', (_e, argv) => {
     try {
       const isSearch = (argv || []).includes('--auto-search');
-      const isAuto = (argv || []).includes('--auto') || isSearch;
+      const isConnect = (argv || []).includes('--auto-connect');
+      const isAuto = (argv || []).includes('--auto') || isSearch || isConnect;
       if (isAuto && mainWindow && !mainWindow.isDestroyed()) {
-        try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] 예약 위임 → 실행 중인 앱에서 자동 생성 (' + (isSearch ? 'search' : 'home') + ')\n'); } catch (e) {}
-        try { mainWindow.webContents.send('run-auto', { kind: isSearch ? 'search' : 'home' }); } catch (e) {}
+        delegatedAutoRun = true;
+        delegatedAutoKind = isConnect ? 'connect' : isSearch ? 'search' : 'home';
+        try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] 예약 위임 → 실행 중인 앱에서 자동 생성 (' + (isConnect ? 'connect' : isSearch ? 'search' : 'home') + ')\n'); } catch (e) {}
+        try { mainWindow.webContents.send('run-auto', { kind: isConnect ? 'connect' : isSearch ? 'search' : 'home' }); } catch (e) {}
       }
     } catch (e) {}
   });
@@ -1600,24 +1609,78 @@ app.whenReady().then(async () => {
       const keyword = String(request && request.keyword || '').trim();
       const analysis = quickAnalyses.get(id);
       if (!analysis) return { ok: false, error: '분석 결과가 만료되었습니다. 링크를 다시 분석해 주세요.' };
-      if (!keyword || keyword.length > 100) return { ok: false, error: '검색 키워드를 선택해 주세요.' };
+      const autoKeyword = keyword === 'auto' || request.autoKeyword === true;
+      if ((!keyword && !autoKeyword) || keyword.length > 100) return { ok: false, error: '검색 키워드를 선택해 주세요.' };
       const recentTitleTypes = topicDrafts.listDrafts(readDraftStore(), 'quick-connect').map((draft) => draft.result && draft.result.plan && draft.result.plan.titleType).filter(Boolean).slice(0, 3);
-      const generated = await quickPost.runQuickGeneration({ analysis, keyword, recentTitleTypes, run: async (params) => {
+      const generated = await quickPost.runQuickGeneration({ analysis, keyword, autoKeyword, recentTitleTypes, run: async (params) => {
         // 역할 분담: Opus 기획만 생각 기능을 쓰고, 기획안을 따라 쓰는 본문 단계는 생각 기능을 끈다.
         const { text, meta } = await runClaude({ ...params, thinking: params.phase === 'planner' ? undefined : false });
-        logTokenUsage(params.phase === 'planner' ? '커넥트 기획' : '커넥트 본문', keyword, meta);
+        logTokenUsage(params.phase === 'planner' ? '커넥트 기획' : '커넥트 본문', keyword === 'auto' ? (analysis.keywords[0] && analysis.keywords[0].keyword) : keyword, meta);
         return { text, meta };
       } });
       const { assembled, plan } = generated;
       const result = { ok: true, post: assembled.post, assets: assembled.assets, status: 'ready', plan: generated.savedPlan };
       const { store, draft } = topicDrafts.addDraft(readDraftStore(), {
-        topicId: 'quick-connect', profileKey: '', keyword, purpose: 'search', productKey: '', source: 'quick', status: 'ready',
+        topicId: 'quick-connect', profileKey: '', keyword: generated.chosenKeyword, purpose: 'search', productKey: '', source: 'quick', status: 'ready',
         holdReasons: [], reviewReasons: [], result,
       });
       writeDraftStore(store);
-      return { ok: true, draftId: draft.id, post: assembled.post, assets: assembled.assets, kind: analysis.kind, issuedUrl: analysis.issuedUrl, titleType: plan.titleType };
+      return { ok: true, draftId: draft.id, post: assembled.post, assets: assembled.assets, kind: analysis.kind, issuedUrl: analysis.issuedUrl, titleType: plan.titleType, chosenKeyword: generated.chosenKeyword };
     } catch (error) { return { ok: false, error: error && error.message || '원고를 생성하지 못했습니다.' }; }
   });
+
+  // Daily Connect data lives only in userData. Telegram credentials are never included in logs or renderer responses.
+  const dataFile = (name) => path.join(app.getPath('userData'), name);
+  const readData = (name, fallback) => { try { return JSON.parse(fs.readFileSync(dataFile(name), 'utf8')); } catch (_) { return fallback; } };
+  const writeData = (name, value) => { fs.mkdirSync(app.getPath('userData'), { recursive: true }); fs.writeFileSync(dataFile(name), JSON.stringify(value, null, 2), 'utf8'); };
+  const readQueue = () => { const value = readData('connect-queue.json', { items: [] }); return Array.isArray(value) ? value : (Array.isArray(value.items) ? value.items : []); };
+  const writeQueue = (items) => writeData('connect-queue.json', { items });
+  ipcMain.handle('notify:get', async (event) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    const config = readData('notify.json', {}); return { ok: true, hasToken: Boolean(config.telegramToken), tokenHint: config.telegramToken ? '…' + config.telegramToken.slice(-4) : '', chatId: config.telegramChatId || '' };
+  });
+  ipcMain.handle('notify:save', async (event, request = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    const config = readData('notify.json', {}); if (request.token != null) config.telegramToken = String(request.token).trim(); if (request.chatId != null) config.telegramChatId = String(request.chatId).trim(); writeData('notify.json', config); return { ok: true };
+  });
+  ipcMain.handle('notify:findChat', async (event, request = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    try { const config = readData('notify.json', {}); const token = String(request.token || config.telegramToken || ''); const found = await telegram.findChatId(token); config.telegramToken = token; config.telegramChatId = found.chatId; writeData('notify.json', config); return { ok: true, ...found }; } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('notify:test', async (event) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    try { const c = readData('notify.json', {}); await telegram.sendTelegram({ token: c.telegramToken, chatId: c.telegramChatId, text: '블로그 자동 알림 연결 완료 ✅' }); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('queue:list', async (event) => isTrustedConnectSender(event) ? { ok: true, items: readQueue() } : { ok: false, error: '허용되지 않은 IPC 발신자입니다.' });
+  ipcMain.handle('queue:add', async (event, request = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    const result = dailyConnect.addQueueUrls(readQueue(), request.urls, { id: () => require('node:crypto').randomUUID() });
+    writeQueue(result.items); return { ok: true, ...result };
+  });
+  ipcMain.handle('queue:remove', async (event, { id } = {}) => { if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' }; const items = readQueue().filter((x) => x.id !== id); writeQueue(items); return { ok: true, items }; });
+  ipcMain.handle('queue:update', async (event, { id, patch = {} } = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    const allowed = ['status', 'kind', 'title', 'keyword', 'draftTitle', 'lastError', 'doneAt']; const items = readQueue(); const item = items.find((x) => x.id === id); if (!item) return { ok: false, error: '대기 링크를 찾지 못했습니다.' };
+    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) item[key] = patch[key]; writeQueue(items); return { ok: true, item };
+  });
+  ipcMain.handle('discover:run', async (event) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    try {
+      const render = createPageRenderer({ BrowserWindow, partition: 'persist:naver', userAgent: _DESKTOP_UA_OF, maxWaitMs: 25000 });
+      const extract = "(function(){return ((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').slice(0,12000)})()";
+      const [travelText, shoppingText] = await Promise.all([render('https://pkgtour.naver.com/', extract), render('https://snxbest.naver.com/home', extract)]);
+      const travel = discoverConnect.candidateLines(travelText, 30); const shopping = discoverConnect.candidateLines(shoppingText, 30);
+      let parsed = { travel: [], shopping: [] };
+      try { const { text, meta } = await runClaude({ model: 'haiku', thinking: false, system: '공개 베스트 목록의 후보를 사실에 근거해 순위화합니다. JSON 외 설명을 쓰지 마세요.', user: `여행 후보와 쇼핑 후보를 각각 판매 가능성 기준 상위 3개로 골라 JSON으로 반환하세요. name, price, why(30자 이내), keyword(검색용 2~4어절)를 포함합니다.\n여행:\n${travel.join('\n').slice(0, 4000)}\n쇼핑:\n${shopping.join('\n').slice(0, 4000)}\n스키마: {"travel":[{"name":"","price":"","why":"","keyword":""}],"shopping":[{"name":"","price":"","why":"","keyword":""}]}` }); parsed = discoverConnect.parseDiscoveryResponse(text); logTokenUsage('커넥트 상품발굴', '여행·쇼핑', meta); } catch (_) {}
+      return { ok: true, ...parsed };
+    } catch (_) { return { ok: true, travel: [], shopping: [] }; }
+  });
+  ipcMain.handle('daily:report', async (event, request = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    const text = dailyConnect.buildReport(request); const c = readData('notify.json', {}); if (!c.telegramToken || !c.telegramChatId) return { ok: true, sent: false, text };
+    try { await telegram.sendTelegram({ token: c.telegramToken, chatId: c.telegramChatId, text }); return { ok: true, sent: true, text }; } catch (error) { return { ok: false, sent: false, text, error: error.message }; }
+  });
+  ipcMain.handle('daily:log', async (event, { line } = {}) => { if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' }; try { fs.appendFileSync(dataFile('daily-connect.log'), `[${new Date().toISOString()}] ${String(line || '').replace(/[\r\n]/g, ' ').slice(0, 1000)}\n`); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
   ipcMain.handle('quick:markSaved', async (_event, { draftId } = {}) => {
     try {
       const store = readDraftStore();
@@ -2317,10 +2380,12 @@ app.whenReady().then(async () => {
   // ★자동 모드 — 렌더러의 autoRun이 다 끝나면 앱 종료 요청. 로그도 남긴다.
   ipcMain.handle('app:autoDone', async (_e, { log } = {}) => {
     try { if (log) fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] ' + log + '\n'); } catch (e) {}
-    setTimeout(() => { try { app.quit(); } catch (e) {} }, 800);
+    if (!delegatedAutoRun) setTimeout(() => { try { app.quit(); } catch (e) {} }, 800);
+    delegatedAutoRun = false;
+    delegatedAutoKind = '';
     return { ok: true };
   });
-  ipcMain.handle('app:isAuto', async () => ({ auto: AUTO_ANY, kind: AUTO_SEARCH_MODE ? 'search' : 'home' }));
+  ipcMain.handle('app:isAuto', async () => ({ auto: AUTO_ANY || delegatedAutoRun, kind: delegatedAutoKind || (AUTO_CONNECT_MODE ? 'connect' : AUTO_SEARCH_MODE ? 'search' : 'home') }));
 
   // ===== 예약 자동 발행 — OS 스케줄러 등록/해제 (Mac launchd / Win 작업 스케줄러) =====
   const cp = require('child_process');
@@ -2416,6 +2481,26 @@ app.whenReady().then(async () => {
       if (process.platform === 'win32') { try { cp.execFileSync('schtasks', ['/query', '/tn', winPrefix + '0']); return { ok: true, enabled: true }; } catch (e) { return { ok: true, enabled: false }; } }
       return { ok: true, enabled: false };
     } catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  // 커넥트는 하루 한 번 단일 예약이며 홈판/검색용 작업 이름과 독립적으로 관리한다.
+  const CONNECT_TASK = 'BlogAutoConnect';
+  ipcMain.handle('daily:schedule', async (event, { enabled, time = '07:00' } = {}) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    if (process.platform !== 'win32') return { ok: false, error: '현재 커넥트 예약은 Windows에서만 지원합니다.' };
+    const cp = require('child_process');
+    try {
+      if (!enabled) { try { cp.execFileSync('schtasks', ['/delete', '/tn', CONNECT_TASK, '/f'], { windowsHide: true }); } catch (_) {} return { ok: true, enabled: false }; }
+      const match = String(time).match(/^(\d{2}):(\d{2})$/); if (!match || +match[1] > 23 || +match[2] > 59) return { ok: false, error: '시간은 HH:MM 형식으로 입력해 주세요.' };
+      const exe = process.execPath; const extra = app.isPackaged ? '' : (' "' + path.join(__dirname, '..') + '"'); const tr = '"' + exe + '"' + extra + ' --auto-connect';
+      cp.execFileSync('schtasks', ['/create', '/tn', CONNECT_TASK, '/tr', tr, '/sc', 'daily', '/st', String(time), '/f'], { windowsHide: true });
+      writeData('daily-connect-schedule.json', { enabled: true, time: String(time) }); return { ok: true, enabled: true, time: String(time) };
+    } catch (error) { return { ok: false, error: String(error.message || error).split('\n')[0] }; }
+  });
+  ipcMain.handle('daily:scheduleStatus', async (event) => {
+    if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
+    if (process.platform !== 'win32') return { ok: true, enabled: false, time: '07:00' };
+    try { require('child_process').execFileSync('schtasks', ['/query', '/tn', CONNECT_TASK], { windowsHide: true }); const saved = readData('daily-connect-schedule.json', {}); return { ok: true, enabled: true, time: saved.time || '07:00' }; } catch (_) { return { ok: true, enabled: false, time: '07:00' }; }
   });
 
   // ★에디터에 텍스트 붙여넣기 — 클립보드 + 실제 Cmd/Ctrl+V 키 이벤트(사람 붙여넣기와 동일).

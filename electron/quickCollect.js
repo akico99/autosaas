@@ -132,4 +132,4 @@ function createQuickCollector({ scrapeRendered, BrowserWindow, nativeImage, user
   };
 }
 
-module.exports = { EXTRACTION_SCRIPT, validateHttpsUrl, createQuickCollector };
+module.exports = { EXTRACTION_SCRIPT, validateHttpsUrl, createQuickCollector, createPageRenderer };

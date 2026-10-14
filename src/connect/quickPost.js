@@ -249,9 +249,10 @@ function parseFactsResponse(text, product = {}) {
   }
   return { facts, keywords: keepFactualKeywords(parseKeywordsResponse(JSON.stringify({ keywords: parsed && parsed.keywords }), product.title), product, facts) };
 }
-function buildPlannerPrompt({ facts, product = {}, keyword, imageCount = 0, recentTitleTypes = [] } = {}) {
+function buildPlannerPrompt({ facts, product = {}, keyword, keywordCandidates = [], imageCount = 0, recentTitleTypes = [] } = {}) {
   const source = facts ? `상품 사실:\n${JSON.stringify(facts)}` : `페이지 자료:\n${cleanPageText(product.summary, product.title, 2500)}`;
-  return `상품 판매 글의 기획안을 JSON으로 작성하세요. facts와 입력에서 확인되는 사실만 쓰고 모르는 정보는 생략하세요.\n제목 유형 중 사실이 가장 잘 뒷받침하는 하나를 고릅니다. 최근 3회 유형은 피하고, 근거가 되는 유형이 하나뿐이면 그 유형을 선택합니다.\nA 가격형: 가격이 가장 강한 판단 근거일 때 (예: "부산 대마도 온천 1박 2일 229,000원, 포함 내역 정리")\nB 목록형: 확인할 조건이 여러 개일 때 (예: "부산 대마도 온천 1박 2일, 예약 전 확인할 5가지")\nC 질문형: 가격 대비 구성이 눈에 띄어 궁금증을 줄 수 있을 때 (예: "부산 대마도 온천 1박 2일, 22만 원대로 다 될까?")\nD 대상형: 특정 고객에게 강한 사실(1인 출발확정, 아이 동반 등)이 있을 때 (예: "혼자도 출발확정, 부산 대마도 온천 1박 2일 22만 원대")\nE 비용형: 추가 비용·불포함 정보가 페이지에 있을 때만 (예: "부산 대마도 온천 229,000원, 추가 비용까지 합치면?")\n제목 유형은 A~E, 제목은 키워드로 시작하거나 포함하고 숫자를 넣어 25~40자. 최근 제목 유형: ${(recentTitleTypes || []).slice(0, 3).join(', ') || '없음'}. 숫자/강조를 포함해도 과장(역대급, 무조건)은 금지하고 사실만 씁니다.\nJSON 스키마: {"titleType":"A","title":"...","hook":["문장","문장"],"summary":["..."],"sections":[{"heading":"...","points":["..."],"emphasis":"... 또는 빈 문자열"}],"fit":{"good":["...","..."],"bad":["...","..."]},"questions":["...","...","..."],"closing":"..."}. hook 2~3문장, summary 4~5개 각 25자 이내, sections 4~5개 각 points 2~3개 짧은 사실, fit 각 2개, questions 3개. images=${Math.max(0, imageCount)}. JSON만 출력하세요.\n\n${source}\n키워드: ${keyword}\n가격 표시: ${product.priceText || '없음'}`;
+  const auto = keyword === 'auto' || (Array.isArray(keywordCandidates) && keywordCandidates.length > 0);
+  return `상품 판매 글의 기획안을 JSON으로 작성하세요. facts와 입력에서 확인되는 사실만 쓰고 모르는 정보는 생략하세요.\n${auto ? `아래 후보 중 가장 판매 가능성이 높은 검색 키워드 하나를 골라 keyword 필드에 글자까지 정확히 그대로 반환하세요. 후보: ${JSON.stringify(keywordCandidates)}\n` : ''}제목 유형 중 사실이 가장 잘 뒷받침하는 하나를 고릅니다. 최근 3회 유형은 피하고, 근거가 되는 유형이 하나뿐이면 그 유형을 선택합니다.\nA 가격형: 가격이 가장 강한 판단 근거일 때 (예: "부산 대마도 온천 1박 2일 229,000원, 포함 내역 정리")\nB 목록형: 확인할 조건이 여러 개일 때 (예: "부산 대마도 온천 1박 2일, 예약 전 확인할 5가지")\nC 질문형: 가격 대비 구성이 눈에 띄어 궁금증을 줄 수 있을 때 (예: "부산 대마도 온천 1박 2일, 22만 원대로 다 될까?")\nD 대상형: 특정 고객에게 강한 사실(1인 출발확정, 아이 동반 등)이 있을 때 (예: "혼자도 출발확정, 부산 대마도 온천 1박 2일 22만 원대")\nE 비용형: 추가 비용·불포함 정보가 페이지에 있을 때만 (예: "부산 대마도 온천 229,000원, 추가 비용까지 합치면?")\n제목 유형은 A~E, 제목은 선택 키워드로 시작하거나 포함하고 숫자를 넣어 25~40자. 최근 제목 유형: ${(recentTitleTypes || []).slice(0, 3).join(', ') || '없음'}. 숫자/강조를 포함해도 과장(역대급, 무조건)은 금지하고 사실만 씁니다.\nJSON 스키마: {"${auto ? 'keyword":"후보 중 정확한 키워드","' : ''}titleType":"A","title":"...","hook":["문장","문장"],"summary":["..."],"sections":[{"heading":"...","points":["..."],"emphasis":"... 또는 빈 문자열"}],"fit":{"good":["...","..."],"bad":["...","..."]},"questions":["...","...","..."],"closing":"..."}. hook 2~3문장, summary 4~5개 각 25자 이내, sections 4~5개 각 points 2~3개 짧은 사실, fit 각 2개, questions 3개. images=${Math.max(0, imageCount)}. JSON만 출력하세요.\n\n${source}\n키워드: ${auto ? '자동 선택' : keyword}\n가격 표시: ${product.priceText || '없음'}`;
 }
 function buildBodyPrompt({ facts, plan, keyword, imageCount = 0, kind = 'shopping' } = {}) {
   const factInput = facts ? JSON.stringify(facts) : '(확인 가능한 사실 없음. 미확인 질문은 상품 페이지 확인을 안내하세요.)';
@@ -263,8 +264,10 @@ function normalizePlan(text) {
   if (!plan || !['A', 'B', 'C', 'D', 'E'].includes(plan.titleType) || !String(plan.title || '').trim()) throw new Error('기획 응답 형식이 올바르지 않습니다.');
   return { ...plan, title: cleanModelText(plan.title) };
 }
-async function runQuickGeneration({ analysis, keyword, recentTitleTypes = [], run } = {}) {
-  const context = { facts: analysis.facts || null, product: analysis.product, keyword, imageCount: (analysis.images || []).length, recentTitleTypes };
+async function runQuickGeneration({ analysis, keyword, autoKeyword = false, recentTitleTypes = [], run } = {}) {
+  const choosing = autoKeyword || keyword === 'auto';
+  const candidates = (analysis.keywords || []).map((item) => String(typeof item === 'string' ? item : item.keyword || '').trim()).filter(Boolean);
+  const context = { facts: analysis.facts || null, product: analysis.product, keyword, keywordCandidates: choosing ? candidates : [], imageCount: (analysis.images || []).length, recentTitleTypes };
   const plannerPrompt = buildPlannerPrompt(context);
   let planResult; let plannerError;
   for (const model of ['opus', 'sonnet']) {
@@ -273,7 +276,10 @@ async function runQuickGeneration({ analysis, keyword, recentTitleTypes = [], ru
   }
   if (!planResult) throw plannerError || new Error('기획을 생성하지 못했습니다.');
   const plan = normalizePlan(planResult.text);
-  const bodyPrompt = buildBodyPrompt({ facts: analysis.facts || null, plan, keyword, imageCount: context.imageCount, kind: analysis.kind });
+  const chosenKeyword = choosing ? (candidates.includes(plan.keyword) ? plan.keyword : (candidates[0] || '')) : keyword;
+  if (!chosenKeyword) throw new Error('선택할 검색 키워드가 없습니다.');
+  if (choosing && !candidates.includes(plan.keyword)) plan.keyword = chosenKeyword;
+  const bodyPrompt = buildBodyPrompt({ facts: analysis.facts || null, plan, keyword: chosenKeyword, imageCount: context.imageCount, kind: analysis.kind });
   let writerResult; let writerError;
   for (const model of ['sonnet', 'haiku']) {
     try { writerResult = await run({ model, phase: 'writer', user: bodyPrompt, system: '기획안과 상품 사실에 근거해 네이버 블로그 원고 JSON을 작성합니다. JSON 외 설명은 출력하지 않습니다.' }); break; }
@@ -281,8 +287,8 @@ async function runQuickGeneration({ analysis, keyword, recentTitleTypes = [], ru
   }
   if (!writerResult) throw writerError || new Error('본문을 생성하지 못했습니다.');
   const generated = normalizeModelPost(writerResult.text); generated.title = plan.title;
-  const assembled = assemblePost({ generated, keyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: (analysis.images || []).map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title, priceText: analysis.product.priceText });
-  return { assembled, plan, savedPlan: { titleType: plan.titleType, title: plan.title } };
+  const assembled = assemblePost({ generated, keyword: chosenKeyword, kind: analysis.kind, issuedUrl: analysis.issuedUrl, assets: (analysis.images || []).map((image) => ({ ...image, caption: analysis.product.title })), title: analysis.product.title, priceText: analysis.product.priceText });
+  return { assembled, plan, chosenKeyword, savedPlan: { titleType: plan.titleType, title: plan.title } };
 }
 function buildWriterPrompt({ product, keyword, images = [], issuedUrl } = {}) {
   const imageSlots = Math.min(images.length, 6);
