@@ -70,7 +70,7 @@ function buildReport({ results = [], discovery = {}, queueLeft = [] } = {}, now 
     lines.push(`• ${label}: ${escapeHtml(item.name || '')}${item.price ? ` · ${escapeHtml(item.price)}` : ''}${item.why ? ` · ${escapeHtml(item.why)}` : ''}${item.keyword ? ` · 추천 키워드 ${escapeHtml(item.keyword)}` : ''}`);
   }
   const target = 4; const saved = results.filter(isSuccessfulResult).length;
-  if (saved < target) lines.push(`오늘은 원고 ${target}편 중 ${saved}편을 임시저장했습니다. 브랜드커넥트에서 링크를 발급해 앱 대기열에 넣어 주세요.`);
+  if (saved < target) lines.push(`오늘 임시저장 ${saved}/${target}편`);
   return lines.join('\n').replace(/\n/g, '<br>');
 }
 
