@@ -5207,8 +5207,32 @@
     if(window._autoDelegated){ window._autoDelegated=false; window._autoMode=false; var std=byId('status-search')||byId('status-home'); if(std){ std.className='status on'; std.innerHTML='🗓️ <b>예약 자동 생성 완료:</b> '+esc(msg); } return; }
     try{ await window.api.autoDone((window._autoLog||'')+'RESULT: '+msg); }catch(e){}
   }
+  window._finishConnectAuto=finishAuto;
+  async function autoConnectRun(isTest){
+    window._autoIsTest=!!isTest;
+    await autoLog('=== 예약 자동 실행 시작 (connect) ===');
+    try{
+      var ses=await window.api.checkSession();
+      if(!ses||!ses.naver) return finishAuto('네이버 로그인 안 됨 — 건너뜀');
+      window._autoMode=true;
+      var travelTab=byId('topic-travel-tab');
+      if(!travelTab) return finishAuto('여행 커넥트 탭을 찾지 못했습니다.');
+      travelTab.click();
+      var ready=false,until=Date.now()+30000;
+      while(Date.now()<until){
+        if(typeof window.runDailyConnect==='function'&&byId('tc-pane')){ready=true;break;}
+        await _sleepA(250);
+      }
+      if(!ready) return finishAuto('여행 커넥트 화면을 준비하지 못했습니다.');
+      await autoLog('여행 커넥트 대기열 실행을 시작합니다.');
+      await window.runDailyConnect({auto:true});
+    }catch(e){await finishAuto('오류: '+(e&&e.message||e));}
+  }
   async function autoRun(kindOverride, isTest){
-    var kind = kindOverride || (/[?&]kind=search/.test(location.search) ? 'search' : 'home');
+    var autoMeta=null;
+    if(!kindOverride&&window.api&&typeof window.api.isAuto==='function'){try{autoMeta=await window.api.isAuto();}catch(e){}}
+    var kind = kindOverride || (autoMeta&&autoMeta.auto&&autoMeta.kind) || (/[?&]kind=search/.test(location.search) ? 'search' : 'home');
+    if(kind==='connect') return autoConnectRun(isTest);
     if(byId('legacy-group')) byId('legacy-group').style.display='flex';
     if(byId('topic-saju-pane')) byId('topic-saju-pane').style.display='none';
     if(byId('tc-pane')) byId('tc-pane').style.display='none';

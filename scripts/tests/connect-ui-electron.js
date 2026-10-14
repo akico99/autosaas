@@ -49,6 +49,25 @@ async function main(){
     await page.waitForFunction(()=>window.fixtureCalls.quickGenerate===1&&window.fixtureCalls.quickDeliver===1&&window.fixtureCalls.quickMark===1);
     assert.equal(await page.evaluate(()=>window.fixtureCalls.quickMarkDraftId),'quick-draft-1','the saved draft id is passed through the preload bridge');
     assert.match(await page.locator('#tc-quick-status').innerText(),/네이버 임시저장 완료/,'quick flow reports the confirmed save');
+    assert.equal(await page.locator('#tc-daily-card').count(),1,'daily queue and Telegram controls render in the travel pane');
+    assert.match(await page.locator('#tc-daily-card').innerText(),/모델 역할: 수집·저장·알림=코드/);
+    await page.locator('#tc-daily-urls').fill(['https://naver.me/travel-1','https://naver.me/travel-2','https://naver.me/travel-3','https://naver.me/shop-1','https://naver.me/shop-2'].join('\n'));
+    await page.locator('#tc-daily-queue-add').click();
+    await page.waitForFunction(()=>window.fixtureCalls.dailyQueue.length===5);
+    assert.match(await page.locator('#tc-daily-counts').innerText(),/대기 5개/);
+    await page.locator('#tc-daily-run').click();
+    await page.waitForFunction(()=>window.fixtureCalls.dailyReports.length===1&&document.querySelector('#tc-daily-run').disabled===false,{timeout:15000});
+    const dailyRun=await page.evaluate(()=>({queue:window.fixtureCalls.dailyQueue,order:window.fixtureCalls.dailyOrder,report:window.fixtureCalls.dailyReports[0],analysis:window.fixtureCalls.quickAnalyze,generation:window.fixtureCalls.quickGenerate,marked:window.fixtureCalls.quickMark}));
+    assert.equal(dailyRun.analysis,6,'the batch analyzes every needed link, including a third travel item that remains queued');
+    assert.equal(dailyRun.generation,5,'four daily drafts plus the earlier quick draft are generated');
+    assert.equal(dailyRun.marked,5,'all four daily drafts and the quick draft are marked after delivery');
+    assert.deepEqual(dailyRun.queue.map(item=>item.status),['done','done','queued','done','done']);
+    assert.deepEqual(dailyRun.report.results.filter(item=>item.ok).map(item=>item.kind),['travel','travel','shopping','shopping']);
+    assert.equal(dailyRun.report.queueLeft.total,1);
+    const deliverySteps=dailyRun.order.filter(step=>step==='fresh'||step.startsWith('deliver:')||step.startsWith('mark:draft-'));
+    assert.equal(deliverySteps.length,12,'each saved draft prepares, delivers, and marks before the next item');
+    for(let i=0;i<deliverySteps.length;i+=3){assert.equal(deliverySteps[i],'fresh');assert.match(deliverySteps[i+1],/^deliver:(travel|shopping):선택 auto$/);assert.match(deliverySteps[i+2],/^mark:draft-/);}
+    assert.match(await page.locator('#tc-daily-run-status').innerText(),/fixture Telegram report sent/);
     await page.locator('#tc-advanced').evaluate(el=>{el.open=true;});
     await page.waitForSelector('.tc-product');
     // Match the live app's constrained flex layout, rather than a full-height standalone panel.

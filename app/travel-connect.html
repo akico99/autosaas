@@ -14,6 +14,35 @@
     <button id="tc-quick-deliver" type="button" class="tc-primary" hidden>에디터에 넣고 임시저장</button>
     <div id="tc-quick-status" class="tc-status" role="status" aria-live="polite"></div>
   </div>
+  <section class="tc-card tc-daily-card" id="tc-daily-card" aria-label="매일 자동 원고">
+    <div class="tc-card-title"><h2>매일 자동 원고 (여행 2 + 쇼핑 2)</h2><span class="tc-tag">자동 저장</span></div>
+    <label for="tc-daily-urls">대기 링크<textarea id="tc-daily-urls" rows="3" placeholder="커넥트 발급 링크를 한 줄에 하나씩 붙여넣으세요"></textarea></label>
+    <button id="tc-daily-queue-add" type="button" class="tc-secondary">대기열에 추가</button>
+    <div class="tc-daily-counts" id="tc-daily-counts" aria-live="polite"></div>
+    <div id="tc-daily-queue" class="tc-daily-list" aria-live="polite"></div>
+    <div class="tc-daily-section">
+      <h3>알림(텔레그램)</h3>
+      <div id="tc-daily-notify-form">
+        <label for="tc-daily-token">봇 토큰<input id="tc-daily-token" type="password" autocomplete="new-password" placeholder="BotFather에서 받은 토큰"></label>
+        <button id="tc-daily-notify-save" type="button" class="tc-secondary">저장</button>
+        <p class="tc-help">BotFather에서 /newbot으로 봇을 만든 뒤, 봇에게 아무 말이나 보내 주세요.</p>
+        <button id="tc-daily-find-chat" type="button" class="tc-quiet">채팅 찾기</button>
+        <span id="tc-daily-chat-name" class="tc-help"></span>
+      </div>
+      <div id="tc-daily-notify-connected" hidden><span id="tc-daily-notify-summary"></span><button id="tc-daily-notify-change" type="button" class="tc-quiet">변경</button></div>
+      <button id="tc-daily-notify-test" type="button" class="tc-quiet">테스트 알림</button>
+      <div id="tc-daily-notify-status" class="tc-status" role="status" aria-live="polite"></div>
+    </div>
+    <div class="tc-daily-section">
+      <h3>예약</h3>
+      <div class="tc-inline tc-daily-schedule"><label class="tc-confirm"><input id="tc-daily-enabled" type="checkbox"> 매일 실행</label><label for="tc-daily-time">실행 시각<input id="tc-daily-time" type="time" value="07:00"></label><button id="tc-daily-schedule-save" type="button" class="tc-secondary">저장</button></div>
+      <div id="tc-daily-schedule-status" class="tc-status" role="status" aria-live="polite"></div>
+    </div>
+    <button id="tc-daily-run" type="button" class="tc-primary">지금 한 번 실행</button>
+    <div id="tc-daily-run-status" class="tc-status" role="status" aria-live="polite"></div>
+    <div class="tc-daily-section"><div class="tc-card-title"><h3>상품 발굴 결과</h3><button id="tc-daily-discover" type="button" class="tc-quiet">발굴만 다시 하기</button></div><div id="tc-daily-discovery" class="tc-daily-list">아직 발굴 결과가 없습니다.</div></div>
+    <p class="tc-help tc-daily-roles">모델 역할: 수집·저장·알림=코드 / 자료정리·상품발굴=Haiku / 키워드 선택·기획=Opus / 본문=Sonnet</p>
+  </section>
   <details id="tc-advanced" class="tc-advanced"><summary>상세 등록·보관함 (고급)</summary><div class="tc-advanced-content">
   <div class="tc-notice">링크에서 상품 정보를 가져오고, 고른 주제로 초안을 만듭니다. 완성된 원고는 보관함에서 확인하세요.</div>
   <div id="tc-autopilot" class="tc-card tc-autopilot"><div class="tc-card-title"><h2>발급 링크로 자동 진행</h2></div><div class="tc-inline"><label for="tc-auto-url">브랜드커넥트 발급 링크<input id="tc-auto-url" type="url" placeholder="https://naver.me/..." autocomplete="url"></label><button id="tc-auto-start" type="button" class="tc-primary">자동 진행 시작</button></div><div id="tc-auto-progress" class="tc-auto-progress" aria-live="polite"></div><div id="tc-auto-status" class="tc-status" role="status" aria-live="polite"></div><div id="tc-auto-summary" class="tc-auto-summary" hidden></div><div id="tc-auto-keywords" class="tc-results" aria-live="polite"></div><div id="tc-auto-custom" class="tc-auto-custom" hidden><label for="tc-auto-keyword-input">원하는 키워드 (선택)<input id="tc-auto-keyword-input" type="text" maxlength="160" placeholder="예: 부산 대마도 1박2일"></label><button id="tc-auto-custom-generate" type="button" class="tc-secondary">이 주제로 원고 만들기</button></div><div id="tc-auto-result" class="tc-auto-result" hidden></div><p class="tc-help">발급받은 naver.me 링크만 자동 진행할 수 있습니다. 일반 상세 URL은 아래 상세 등록에서 직접 입력해 주세요. 가격은 6시간이 지나면 키워드를 고를 때 자동으로 다시 확인합니다.</p></div>
