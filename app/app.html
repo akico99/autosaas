@@ -5220,7 +5220,7 @@
     await autoLog('=== 예약 자동 실행 시작 (connect) ===');
     try{
       var ses=await window.api.checkSession();
-      if(!ses||!ses.naver){var loginMessage='네이버 로그인이 필요합니다. 앱에서 네이버에 로그인한 뒤 예약 실행을 다시 시도해 주세요.';var loginReport=await reportConnectAutoFailure(loginMessage);return finishAuto(loginReport&&loginReport.ok?(loginReport.text||loginMessage):loginMessage+' 텔레그램 보고 실패: '+(loginReport&&loginReport.error||'보고 기능을 확인해 주세요.'));}
+      if(!ses||!ses.naver){var loginMessage='네이버 로그인이 필요합니다. 앱에서 네이버에 로그인한 뒤 예약 실행을 다시 시도해 주세요.';var loginReport=await reportConnectAutoFailure(loginMessage);return finishAuto(loginReport&&loginReport.ok?(loginReport.text||loginMessage).replace(/<br\s*\/?>/gi,'\n'):loginMessage+' 텔레그램 보고 실패: '+(loginReport&&loginReport.error||'보고 기능을 확인해 주세요.'));}
       window._autoMode=true;
       var travelTab=byId('topic-travel-tab');
       if(!travelTab) return finishAuto('여행 커넥트 탭을 찾지 못했습니다.');
@@ -5233,7 +5233,7 @@
       if(!ready) return finishAuto('여행 커넥트 화면을 준비하지 못했습니다.');
       await autoLog('여행 커넥트 대기열 실행을 시작합니다.');
       await window.runDailyConnect({auto:true});
-    }catch(e){var failureMessage='예약 자동 실행 오류: '+(e&&e.message||e);var failureReport=await reportConnectAutoFailure(failureMessage);await finishAuto(failureMessage+(failureReport&&failureReport.ok?'':' · 텔레그램 보고 실패: '+(failureReport&&failureReport.error||'보고 기능을 확인해 주세요.')));}
+    }catch(e){var failureMessage='예약 자동 실행 오류: '+(e&&e.message||e);var failureReport=await reportConnectAutoFailure(failureMessage);await finishAuto((failureReport&&failureReport.ok&&failureReport.text?failureReport.text.replace(/<br\s*\/?>/gi,'\n'):failureMessage)+(failureReport&&failureReport.ok?'':' · 텔레그램 보고 실패: '+(failureReport&&failureReport.error||'보고 기능을 확인해 주세요.')));}
   }
   async function autoRun(kindOverride, isTest){
     var autoMeta=null;

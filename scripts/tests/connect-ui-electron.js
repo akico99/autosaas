@@ -80,6 +80,11 @@ async function main(){
     assert.equal(fatalRun.ok,false,'fatal run errors remain failures');
     const fatalReport=await page.evaluate(()=>window.fixtureCalls.dailyReports[3]); assert.match(fatalReport.results[0].error,/fixture queue failure/,'fatal run errors are sent through Telegram reporting');
     await page.evaluate(()=>{window.fixtureCalls.queueListFailure=false;});
+    const persistenceFailure=await page.evaluate(async()=>{window.fixtureCalls.dailyQueue[2].status='queued';window.fixtureCalls.dailyQueue[2].kind='travel';window.fixtureCalls.queueDoneFailure=true;const result=await window.runDailyConnect({auto:false});window.fixtureCalls.queueDoneFailure=false;return {result,item:window.fixtureCalls.dailyQueue[2]};});
+    assert.equal(persistenceFailure.result.results[0].ok,false,'a failed final queue update cannot mark the item complete');
+    assert.equal(persistenceFailure.result.report.ok,true,'the run only reports success because Telegram delivered the failure result');
+    assert.match(persistenceFailure.result.results[0].error,/fixture done update failure/);
+    assert.equal(persistenceFailure.item.status,'failed');
     await page.locator('#tc-advanced').evaluate(el=>{el.open=true;});
     await page.waitForSelector('.tc-product');
     // Match the live app's constrained flex layout, rather than a full-height standalone panel.
