@@ -1667,13 +1667,16 @@ app.whenReady().then(async () => {
     if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };
     try {
       const render = createPageRenderer({ BrowserWindow, partition: 'persist:naver', userAgent: _DESKTOP_UA_OF, maxWaitMs: 25000 });
-      const extract = "(function(){return ((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').slice(0,12000)})()";
+      // Keep innerText line breaks so candidateLines can inspect one product per line.
+      const extract = "(function(){return ((document.body&&document.body.innerText)||'').replace(/[ \\t]+/g,' ').slice(0,12000)})()";
       const [travelText, shoppingText] = await Promise.all([render('https://pkgtour.naver.com/', extract), render('https://snxbest.naver.com/home', extract)]);
       const travel = discoverConnect.candidateLines(travelText, 30); const shopping = discoverConnect.candidateLines(shoppingText, 30);
+      if (!discoverConnect.hasDiscoveryCandidates({ travel, shopping })) return { ok: false, error: '공개 베스트 목록에서 여행과 쇼핑 후보를 모두 찾지 못했습니다.' };
       let parsed = { travel: [], shopping: [] };
       try { const { text, meta } = await runClaude({ model: 'haiku', thinking: false, system: '공개 베스트 목록의 후보를 사실에 근거해 순위화합니다. JSON 외 설명을 쓰지 마세요.', user: `여행 후보와 쇼핑 후보를 각각 판매 가능성 기준 상위 3개로 골라 JSON으로 반환하세요. name, price, why(30자 이내), keyword(검색용 2~4어절)를 포함합니다.\n여행:\n${travel.join('\n').slice(0, 4000)}\n쇼핑:\n${shopping.join('\n').slice(0, 4000)}\n스키마: {"travel":[{"name":"","price":"","why":"","keyword":""}],"shopping":[{"name":"","price":"","why":"","keyword":""}]}` }); parsed = discoverConnect.parseDiscoveryResponse(text); logTokenUsage('커넥트 상품발굴', '여행·쇼핑', meta); } catch (_) {}
+      if (!discoverConnect.hasDiscoveryCandidates(parsed)) return { ok: false, error: '상품 발굴 결과에서 여행과 쇼핑 상품을 모두 확인하지 못했습니다.' };
       return { ok: true, ...parsed };
-    } catch (_) { return { ok: true, travel: [], shopping: [] }; }
+    } catch (error) { return { ok: false, error: error && error.message || '상품 발굴 중 오류가 발생했습니다.' }; }
   });
   ipcMain.handle('daily:report', async (event, request = {}) => {
     if (!isTrustedConnectSender(event)) return { ok: false, error: '허용되지 않은 IPC 발신자입니다.' };

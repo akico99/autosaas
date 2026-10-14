@@ -80,3 +80,14 @@ test('discovery parse accepts fenced JSON and safely falls back on malformed dat
   });
   assert.deepEqual(discover.parseDiscoveryResponse('oops'), { travel: [], shopping: [] });
 });
+
+test('discovery candidates preserve product-per-line text and require both categories', () => {
+  const pageText = '여행 상품 1\n오사카 3박 4일 299,000원\n쇼핑 상품 1\n무선 이어폰 29,900원';
+  const travel = discover.candidateLines(pageText.split('쇼핑 상품')[0]);
+  const shopping = discover.candidateLines('쇼핑 상품 1\n무선 이어폰 29,900원');
+  assert.deepEqual(travel, ['여행 상품 1', '오사카 3박 4일 299,000원']);
+  assert.deepEqual(shopping, ['쇼핑 상품 1', '무선 이어폰 29,900원']);
+  assert.equal(discover.hasDiscoveryCandidates({ travel, shopping }), true);
+  assert.equal(discover.hasDiscoveryCandidates({ travel, shopping: [] }), false);
+  assert.equal(discover.hasDiscoveryCandidates({ travel: [], shopping }), false);
+});

@@ -3,6 +3,9 @@
 function candidateLines(text, max = 30) {
   return String(text || '').split(/[\r\n]+/).map((line) => line.replace(/\s+/g, ' ').trim()).filter((line) => line.length >= 5 && line.length <= 180 && !/로그인|회원가입|고객센터|네이버\s*페이/.test(line)).slice(0, max);
 }
+function hasDiscoveryCandidates({ travel = [], shopping = [] } = {}) {
+  return Array.isArray(travel) && travel.length > 0 && Array.isArray(shopping) && shopping.length > 0;
+}
 function parseDiscoveryResponse(text) {
   try {
     const clean = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -11,4 +14,4 @@ function parseDiscoveryResponse(text) {
     return { travel: cleanItems(value.travel), shopping: cleanItems(value.shopping) };
   } catch (_) { return { travel: [], shopping: [] }; }
 }
-module.exports = { candidateLines, parseDiscoveryResponse };
+module.exports = { candidateLines, hasDiscoveryCandidates, parseDiscoveryResponse };
