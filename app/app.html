@@ -5204,7 +5204,7 @@
     // ★"지금 바로 테스트"면 앱을 끄지 않고 화면에 결과만 보여준다.
     if(window._autoIsTest){ var st=byId('status-search')||byId('status-home'); if(st){ st.className='status on'; st.innerHTML='🧪 <b>테스트 결과:</b> '+esc(msg); } window._autoIsTest=false; window._autoMode=false; return; }
     // ★예약 위임 실행(앱이 켜져 있어서 실행 중인 창이 대신 생성) = 사용자가 쓰던 앱이므로 절대 끄지 않는다. 결과만 표시.
-    if(window._autoDelegated){ window._autoDelegated=false; window._autoMode=false; var std=byId('status-search')||byId('status-home'); if(std){ std.className='status on'; std.innerHTML='🗓️ <b>예약 자동 생성 완료:</b> '+esc(msg); } return; }
+    if(window._autoDelegated){ window._autoDelegated=false; window._autoMode=false; try{ await window.api.autoDone((window._autoLog||'')+'RESULT: '+msg); }catch(e){} var std=byId('status-search')||byId('status-home'); if(std){ std.className='status on'; std.innerHTML='🗓️ <b>예약 자동 생성 완료:</b> '+esc(msg); } return; }
     try{ await window.api.autoDone((window._autoLog||'')+'RESULT: '+msg); }catch(e){}
   }
   window._finishConnectAuto=finishAuto;

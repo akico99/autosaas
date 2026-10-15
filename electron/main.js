@@ -6,6 +6,7 @@
 
 const { app, BrowserWindow, ipcMain, dialog, session, clipboard, webContents, shell, nativeImage, powerSaveBlocker } = require('electron');
 const { createRenderedCollector } = require('./renderedCollector');
+const { createDelegatedAutoDispatcher } = require('./delegatedAutoDispatcher');
 
 // ★#8 방송 캡쳐 "하단" 워터마크 크롭 — 방송사 자막·로고 워터마크는 대부분 화면 "아래쪽 띠"에 있음(실무자 확인).
 //   이미지 아래쪽 pct(기본 13%)만큼을 잘라내 워터마크를 제거한다. Electron 내장 nativeImage(추가 설치 0).
@@ -680,6 +681,7 @@ function createWindow() {
   // 개발 중 디버깅용 — 렌더러 콘솔 확인 (배포 시 제거)
   if (process.env.DEV_TOOLS === '1') win.webContents.openDevTools({ mode: 'detach' });
   mainWindow = win; // ★실행 중인 창 참조(예약 위임 트리거용)
+  delegatedAutoDispatcher.retry(); // 시작 중 이미 도착한 예약 요청이 있으면 준비된 렌더러로 전달
   return win;
 }
 
@@ -689,6 +691,17 @@ function createWindow() {
 let mainWindow = null;
 let delegatedAutoRun = false;
 let delegatedAutoKind = '';
+const delegatedAutoDispatcher = createDelegatedAutoDispatcher({
+  getWindow: () => mainWindow,
+  getAppUrl: () => 'http://127.0.0.1:' + APP_PORT + '/app/app.html',
+  onStateChange: (state) => { delegatedAutoRun = state.active; delegatedAutoKind = state.kind; },
+  onDispatch: (kind) => {
+    try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] 예약 위임 → 실행 중인 앱에서 자동 생성 (' + kind + ')\n'); } catch (e) {}
+  },
+  onError: (error) => {
+    try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] 예약 위임 실패: ' + (error && error.message || error) + '\n'); } catch (e) {}
+  },
+});
 // 키워드 미리보기는 이 프로세스에서 만든 값만 저장한다. 렌더러는 파일 경로나 임의 행을 export로 넘길 수 없다.
 const keywordReportPreparedBySender = new Map();
 const _gotSingleLock = app.requestSingleInstanceLock();
@@ -700,12 +713,7 @@ if (!_gotSingleLock) {
       const isSearch = (argv || []).includes('--auto-search');
       const isConnect = (argv || []).includes('--auto-connect');
       const isAuto = (argv || []).includes('--auto') || isSearch || isConnect;
-      if (isAuto && mainWindow && !mainWindow.isDestroyed()) {
-        delegatedAutoRun = true;
-        delegatedAutoKind = isConnect ? 'connect' : isSearch ? 'search' : 'home';
-        try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] 예약 위임 → 실행 중인 앱에서 자동 생성 (' + (isConnect ? 'connect' : isSearch ? 'search' : 'home') + ')\n'); } catch (e) {}
-        try { mainWindow.webContents.send('run-auto', { kind: isConnect ? 'connect' : isSearch ? 'search' : 'home' }); } catch (e) {}
-      }
+      if (isAuto) delegatedAutoDispatcher.request(isConnect ? 'connect' : isSearch ? 'search' : 'home');
     } catch (e) {}
   });
 }
@@ -2383,7 +2391,9 @@ app.whenReady().then(async () => {
   // ★자동 모드 — 렌더러의 autoRun이 다 끝나면 앱 종료 요청. 로그도 남긴다.
   ipcMain.handle('app:autoDone', async (_e, { log } = {}) => {
     try { if (log) fs.appendFileSync(path.join(app.getPath('userData'), 'auto-run.log'), '[' + new Date().toISOString() + '] ' + log + '\n'); } catch (e) {}
-    if (!delegatedAutoRun) setTimeout(() => { try { app.quit(); } catch (e) {} }, 800);
+    const wasDelegatedAutoRun = delegatedAutoRun;
+    if (!wasDelegatedAutoRun) setTimeout(() => { try { app.quit(); } catch (e) {} }, 800);
+    delegatedAutoDispatcher.complete();
     delegatedAutoRun = false;
     delegatedAutoKind = '';
     return { ok: true };
