@@ -36,7 +36,11 @@ function createDelegatedAutoDispatcher({ getWindow, getAppUrl, onStateChange = (
     if (waitingContents === contents) return;
     removeWaiters();
     waitingContents = contents;
-    finishListener = () => { removeWaiters(); navigating = false; route(); };
+    finishListener = () => {
+      const appPageFinished = isAppPage(typeof contents.getURL === 'function' ? contents.getURL() : '');
+      removeWaiters(); navigating = false;
+      route(appPageFinished);
+    };
     failListener = (_event, code, description, _url, isMainFrame) => {
       if (isMainFrame === false) return;
       complete(new Error('예약 자동 실행을 위해 앱 화면을 열지 못했습니다: ' + (description || code || '페이지 로드 실패')));
@@ -47,7 +51,7 @@ function createDelegatedAutoDispatcher({ getWindow, getAppUrl, onStateChange = (
   function isAppPage(url) {
     try { return new URL(url).pathname.toLowerCase().endsWith('/app/app.html'); } catch (_) { return false; }
   }
-  function route() {
+  function route(loadFinished = false) {
     if (!active || dispatched) return;
     const win = getWindow();
     if (!win) return;
@@ -63,7 +67,7 @@ function createDelegatedAutoDispatcher({ getWindow, getAppUrl, onStateChange = (
     const url = typeof contents.getURL === 'function' ? contents.getURL() : '';
     if (isAppPage(url) && /[?&]auto=1(?:&|$)/.test(url)) { complete(); return; }
     if (isAppPage(url)) {
-      if (typeof contents.isLoadingMainFrame === 'function' && contents.isLoadingMainFrame()) { waitForLoad(contents); return; }
+      if (!loadFinished && typeof contents.isLoadingMainFrame === 'function' && contents.isLoadingMainFrame()) { waitForLoad(contents); return; }
       try {
         dispatched = true;
         if (timeout) clearTimeout(timeout);

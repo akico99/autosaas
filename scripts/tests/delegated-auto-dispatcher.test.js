@@ -56,6 +56,16 @@ test('a scheduled request waits for an active app renderer to finish loading', (
   dispatcher.complete();
 });
 
+test('did-finish-load dispatches even when Electron still reports the main frame loading', () => {
+  const win = new FakeWindow(appUrl, { loading: true });
+  const dispatcher = createDelegatedAutoDispatcher({ getWindow: () => win, getAppUrl: () => appUrl });
+  dispatcher.request('connect');
+  win.webContents.emit('did-finish-load');
+  assert.deepEqual(win.webContents.sent, [{ channel: 'run-auto', payload: { kind: 'connect' } }]);
+  assert.equal(win.webContents.sent.length, 1);
+  dispatcher.complete();
+});
+
 test('an app.html?auto=1 renderer is already running and receives no delegated duplicate', () => {
   const win = new FakeWindow(appUrl + '?auto=1&kind=connect');
   const dispatcher = createDelegatedAutoDispatcher({ getWindow: () => win, getAppUrl: () => appUrl });
